@@ -1,7 +1,7 @@
 ﻿using System.Diagnostics;
 using Xunit.Abstractions;
 
-namespace QPAC.DataHub.SystemTests.Helpers;
+namespace Reimaginate.DataHub.TestFramework.XUnit.Helpers;
 
 public static class DiagnosticsExtensions
 {
