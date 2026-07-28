@@ -1,0 +1,16 @@
+<Solution>
+  <Project Path="cli/Reimaginate.DataHub.CLI.Tools/Reimaginate.DataHub.CLI.Tools.csproj" />
+  <Project Path="cli/Reimaginate.DataHub.CLI/Reimaginate.DataHub.CLI.csproj" />
+  <Project Path="framework/Reimaginate.DataHub.Abstractions/Reimaginate.DataHub.Abstractions.csproj" />
+  <Project Path="framework/Reimaginate.DataHub.AspNetCore/Reimaginate.DataHub.AspNetCore.csproj" />
+  <Project Path="framework/Reimaginate.DataHub.Client/Reimaginate.DataHub.Client.csproj" />
+  <Project Path="framework/Reimaginate.DataHub.SharedModels/Reimaginate.DataHub.SharedModels.csproj" />
+  <Project Path="framework/Reimaginate.DataHub.VirtualEntities.Abstractions/Reimaginate.DataHub.VirtualEntities.Abstractions.csproj" />
+  <Project Path="framework/Reimaginate.DataHub/Reimaginate.DataHub.csproj" />
+  <Project Path="samples/Reimaginate.DataHub.ReferenceHost/Reimaginate.DataHub.ReferenceHost.csproj" />
+  <Project Path="testing/Reimaginate.DataHub.CLI.Test.Unit/Reimaginate.DataHub.CLI.Test.Unit.csproj" />
+  <Project Path="testing/Reimaginate.DataHub.Test.Unit/Reimaginate.DataHub.Test.Unit.csproj" />
+  <Project Path="testing/Reimaginate.DataHub.TestFramework.Agents.DataHub/Reimaginate.DataHub.TestFramework.Agents.DataHub.csproj" />
+  <Project Path="testing/Reimaginate.DataHub.TestFramework.XUnit/Reimaginate.DataHub.TestFramework.XUnit.csproj" />
+  <Project Path="testing/Reimaginate.DataHub.TestFramework/Reimaginate.DataHub.TestFramework.csproj" />
+</Solution>

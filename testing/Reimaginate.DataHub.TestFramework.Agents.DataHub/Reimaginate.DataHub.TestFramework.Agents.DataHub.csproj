@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+		<Description>DataHub-specific test framework agents for composing DataHub testing workflows.</Description>
+		<PackageTags>datahub;testing;agents;test-framework;reimaginate</PackageTags>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Reimaginate.DataHub.TestFramework\Reimaginate.DataHub.TestFramework.csproj" />
+	</ItemGroup>
+
+</Project>

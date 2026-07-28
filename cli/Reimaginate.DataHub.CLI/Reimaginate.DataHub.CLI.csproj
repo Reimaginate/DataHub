@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>datahub</ToolCommandName>
+    <PackageId>Reimaginate.DataHub.CLI</PackageId>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <Description>Command line tool for administering DataHub instances.</Description>
+    <PackageTags>datahub;cli;tool;reimaginate</PackageTags>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Reimaginate.CLI.Base" Version="1.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Reimaginate.DataHub.CLI.Tools\Reimaginate.DataHub.CLI.Tools.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <DataHubCliBundlePackagesDir>$(MSBuildProjectDirectory)\obj\bundled-tool-packages</DataHubCliBundlePackagesDir>
+    <DataHubCliBundlePackDir>$(MSBuildProjectDirectory)\obj\bundled-tools</DataHubCliBundlePackDir>
+  </PropertyGroup>
+
+  <Target Name="StageDataHubCliBundledToolsForBuild" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\stage-cli-bundled-tools.ps1&quot; -Configuration &quot;$(Configuration)&quot; -Version &quot;$(VersionPrefix)&quot; -OutputPath &quot;$(TargetDir)bundled-tools&quot; -DependencyOutputPath &quot;$(TargetDir)bundled-tools\dependencies&quot; -ArtifactsPath &quot;$(DataHubCliBundlePackagesDir)&quot; -NoBuild" />
+  </Target>
+
+  <Target Name="StageDataHubCliBundledToolsForPack" Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'">
+    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\stage-cli-bundled-tools.ps1&quot; -Configuration &quot;$(Configuration)&quot; -Version &quot;$(VersionPrefix)&quot; -OutputPath &quot;$(DataHubCliBundlePackDir)&quot; -DependencyOutputPath &quot;$(DataHubCliBundlePackDir)\dependencies&quot; -ArtifactsPath &quot;$(DataHubCliBundlePackagesDir)&quot; -NoBuild" />
+  </Target>
+
+  <Target Name="AddDataHubCliBundledToolsToPackage" BeforeTargets="_GetPackageFiles" DependsOnTargets="StageDataHubCliBundledToolsForPack">
+    <ItemGroup>
+      <Content Include="$(DataHubCliBundlePackDir)\**\*.nupkg" Pack="true" PackagePath="tools/$(TargetFramework)/any/bundled-tools/%(RecursiveDir)" />
+      <Content Include="$(DataHubCliBundlePackDir)\THIRD-PARTY-NOTICES.txt" Pack="true" PackagePath="THIRD-PARTY-NOTICES.txt" />
+    </ItemGroup>
+  </Target>
+
+</Project>

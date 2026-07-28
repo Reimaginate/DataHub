@@ -1,0 +1,12 @@
+﻿using System.Collections.Generic;
+
+namespace Reimaginate.DataHub.SharedModels.Requests.Client;
+
+public class GetTrackedEntitiesResponse
+{
+    public bool Success { get; set; }
+    public string FailureReason { get; set; }
+    public List<GetTrackedEntityResult> Results { get; set; }
+
+   
+}

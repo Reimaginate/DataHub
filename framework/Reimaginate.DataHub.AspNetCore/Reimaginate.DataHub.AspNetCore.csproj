@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <Description>ASP.NET Core endpoint helpers for hosting DataHub APIs in Azure Container Apps and other web hosts.</Description>
+    <PackageTags>datahub;aspnetcore;container-apps;diagnostics;api</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="FluentValidation" Version="12.1.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
+    <PackageReference Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.5.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Reimaginate.DataHub\Reimaginate.DataHub.csproj" />
+    <ProjectReference Include="..\Reimaginate.DataHub.SharedModels\Reimaginate.DataHub.SharedModels.csproj" />
+  </ItemGroup>
+
+</Project>

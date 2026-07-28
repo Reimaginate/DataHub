@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+		<Description>HTTP client components for calling DataHub APIs using shared DataHub request and response models.</Description>
+		<PackageTags>datahub;client;http;api;reimaginate</PackageTags>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Azure.Identity" Version="1.21.0" />
+		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.10" />
+		<PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Reimaginate.DataHub.SharedModels\Reimaginate.DataHub.SharedModels.csproj" />
+	</ItemGroup>
+
+</Project>

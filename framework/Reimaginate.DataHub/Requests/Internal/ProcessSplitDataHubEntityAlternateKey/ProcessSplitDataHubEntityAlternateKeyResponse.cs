@@ -1,0 +1,5 @@
+using Reimaginate.DataHub.SharedModels.Requests.CLI;
+
+namespace Reimaginate.DataHub.Requests.Internal.ProcessSplitDataHubEntityAlternateKey;
+
+public class ProcessSplitDataHubEntityAlternateKeyResponse : SplitDataHubEntityAlternateKeyResponse;

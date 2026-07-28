@@ -1,0 +1,38 @@
+@host = http://localhost:5000
+@key = development-key
+@correlationId = reference-host-demo
+
+### Health
+GET {{host}}/healthz
+
+### Client endpoint without key returns structured 401
+POST {{host}}/api/Client
+Content-Type: application/json
+x-correlation-id: {{correlationId}}
+
+{
+  "requestType": "GetDataHubEntityRequest",
+  "data": "{}"
+}
+
+### Client endpoint with malformed envelope returns structured 400
+POST {{host}}/api/Client
+Content-Type: application/json
+x-functions-key: {{key}}
+x-correlation-id: {{correlationId}}
+
+{
+  "requestType": "GetDataHubEntityRequest",
+  "data": "{"
+}
+
+### Client endpoint with unknown request type returns structured 400
+POST {{host}}/api/Client
+Content-Type: application/json
+x-functions-key: {{key}}
+x-correlation-id: {{correlationId}}
+
+{
+  "requestType": "NotARealRequest",
+  "data": "{}"
+}

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Reimaginate.DataHub.CLI.Test.Unit</AssemblyName>
+    <RootNamespace>Reimaginate.DataHub.CLI.Test.Unit</RootNamespace>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="Microsoft.Testing.Platform" Version="2.3.2" />
+    <PackageReference Include="NSubstitute" Version="6.0.0" />
+    <PackageReference Include="xunit.v3.extensibility.core" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\cli\Reimaginate.DataHub.CLI\Reimaginate.DataHub.CLI.csproj" />
+    <ProjectReference Include="..\..\cli\Reimaginate.DataHub.CLI.Tools\Reimaginate.DataHub.CLI.Tools.csproj" />
+    <ProjectReference Include="..\..\framework\Reimaginate.DataHub.SharedModels\Reimaginate.DataHub.SharedModels.csproj" />
+  </ItemGroup>
+
+</Project>
