@@ -50,11 +50,12 @@ dotnet test .\Reimaginate.DataHub.slnx --configuration Release
 
 ## License
 
-DataHub version 1.4.0 is source-available under the
+The DataHub 1.4 Release Line is licensed under the
 [Business Source License 1.1](LICENSE), including the Additional Use Grant
-for production use for any purpose other than developing, providing or
-operating a Hosted Competitive Offering. The SPDX identifier is `BUSL-1.1`.
+for production use for any purpose other than providing or operating a Hosted
+Competitive Offering. The SPDX identifier is
+`BUSL-1.1`.
 
-DataHub version 1.4.0 converts to the MIT licence on 28 July 2028. See the
+The DataHub 1.4 Release Line converts to the MIT licence on 28 July 2028. See the
 [licensing guide](docs/licensing.md) for the application boundary;
 `LICENSE` is authoritative.

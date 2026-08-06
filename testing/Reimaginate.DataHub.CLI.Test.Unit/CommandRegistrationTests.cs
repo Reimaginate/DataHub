@@ -880,6 +880,8 @@ public class CommandRegistrationTests
             "--ids",
             "promise-1",
             "promise-2",
+            "--page-size",
+            "25",
             "--yes",
             "--do-not-track",
             "--stop-on-failure",
@@ -897,6 +899,7 @@ public class CommandRegistrationTests
 
         var byIds = JObject.Parse(api.Message!.Data);
         byIds[nameof(ResolveResolutionPromisesRequest.PromiseIds)]!.Values<string>().Should().BeEquivalentTo(["promise-1", "promise-2"]);
+        byIds[nameof(ResolveResolutionPromisesRequest.PageSize)]!.Value<int>().Should().Be(25);
         byIds[nameof(ResolveResolutionPromisesRequest.DoNotTrack)]!.Value<bool>().Should().BeTrue();
         byIds[nameof(ResolveResolutionPromisesRequest.StopOnFailure)]!.Value<bool>().Should().BeTrue();
         api.Targets.Last().Should().Be(new CliTargetOptions(
@@ -917,8 +920,120 @@ public class CommandRegistrationTests
 
         var byWhere = JObject.Parse(api.Message!.Data);
         byWhere[nameof(ResolveResolutionPromisesRequest.WhereClause)]!.Value<string>().Should().Be("x.DataHubEntityType = 'Contact'");
+        byWhere[nameof(ResolveResolutionPromisesRequest.PageSize)]!.Value<int>().Should().Be(500);
         byWhere[nameof(ResolveResolutionPromisesRequest.DryRun)]!.Value<bool>().Should().BeTrue();
         byWhere[nameof(ResolveResolutionPromisesRequest.StopOnFailure)]!.Value<bool>().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Resolution_promises_resolve_chunks_explicit_ids_to_the_safe_page_size()
+    {
+        var api = new BatchedResolutionPromisesCliApi();
+        var services = new ServiceCollection();
+        services.AddSingleton<ICLIApi>(api);
+        services.AddDataHubCliCommands(new ConfigurationBuilder().Build());
+        using var serviceProvider = services.BuildServiceProvider();
+        var rootCommand = new RootCommand();
+        rootCommand.AddDataHubTools(serviceProvider);
+        var promiseIds = Enumerable.Range(1, 1001).Select(index => $"promise-{index}").ToList();
+        var arguments = new List<string> { "resolution-promises", "resolve", "--ids" };
+        arguments.AddRange(promiseIds);
+        arguments.AddRange(["--dry-run", "--output", "json"]);
+
+        var exitCode = await rootCommand.Parse(arguments.ToArray()).InvokeAsync(new InvocationConfiguration(), TestContext.Current.CancellationToken);
+
+        exitCode.Should().Be(0);
+        api.Messages.Should().HaveCount(3);
+        api.Messages.Select(message => message.CorrelationId).Distinct()
+            .Should().ContainSingle().Which.Should().NotBeNullOrWhiteSpace();
+        var requests = api.Messages.Select(message => JObject.Parse(message.Data)).ToList();
+        requests.Select(payload => payload[nameof(ResolveResolutionPromisesRequest.PageSize)]!.Value<int>())
+            .Should().OnlyContain(pageSize => pageSize == 500);
+        requests.Select(payload => payload[nameof(ResolveResolutionPromisesRequest.PromiseIds)]!.Count())
+            .Should().Equal(500, 500, 1);
+        requests.SelectMany(payload => payload[nameof(ResolveResolutionPromisesRequest.PromiseIds)]!.Values<string>())
+            .Should().Equal(promiseIds);
+        requests.Select(payload => payload[nameof(ResolveResolutionPromisesRequest.ContinuationToken)]?.Value<string>())
+            .Should().OnlyContain(continuationToken => string.IsNullOrWhiteSpace(continuationToken));
+    }
+
+    [Fact]
+    public async Task Resolution_promises_resolve_follows_continuation_tokens_within_an_explicit_id_batch()
+    {
+        var api = new PagedResolutionPromisesCliApi();
+        var services = new ServiceCollection();
+        services.AddSingleton<ICLIApi>(api);
+        services.AddDataHubCliCommands(new ConfigurationBuilder().Build());
+        using var serviceProvider = services.BuildServiceProvider();
+        var rootCommand = new RootCommand();
+        rootCommand.AddDataHubTools(serviceProvider);
+
+        var exitCode = await rootCommand.Parse([
+            "resolution-promises",
+            "resolve",
+            "--ids",
+            "promise-1",
+            "promise-2",
+            "--dry-run",
+            "--output",
+            "json"
+        ]).InvokeAsync(new InvocationConfiguration(), TestContext.Current.CancellationToken);
+
+        exitCode.Should().Be(0);
+        api.Messages.Should().HaveCount(2);
+        var first = JObject.Parse(api.Messages[0].Data);
+        var second = JObject.Parse(api.Messages[1].Data);
+        first[nameof(ResolveResolutionPromisesRequest.ContinuationToken)]?.Value<string>().Should().BeNullOrEmpty();
+        second[nameof(ResolveResolutionPromisesRequest.ContinuationToken)]!.Value<string>().Should().Be("page-2");
+        first[nameof(ResolveResolutionPromisesRequest.PromiseIds)]!.Values<string>().Should().Equal("promise-1", "promise-2");
+        second[nameof(ResolveResolutionPromisesRequest.PromiseIds)]!.Values<string>().Should().Equal("promise-1", "promise-2");
+    }
+
+    [Fact]
+    public async Task Resolution_promises_resolve_restarts_after_mutation_then_advances_past_unresolved_pages()
+    {
+        var api = new MutatingPagedResolutionPromisesCliApi();
+        var services = new ServiceCollection();
+        services.AddSingleton<ICLIApi>(api);
+        services.AddDataHubCliCommands(new ConfigurationBuilder().Build());
+        using var serviceProvider = services.BuildServiceProvider();
+        var rootCommand = new RootCommand();
+        rootCommand.AddDataHubTools(serviceProvider);
+        var output = new StringWriter();
+        var originalOutput = Console.Out;
+        var originalAnsiConsole = AnsiConsole.Console;
+
+        Console.SetOut(output);
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new FixedWidthAnsiConsoleOutput(output)
+        });
+        try
+        {
+            var exitCode = await rootCommand.Parse([
+                "resolution-promises",
+                "resolve",
+                "--where",
+                "x.DataHubEntityType = 'Contact'",
+                "--yes",
+                "--output",
+                "json"
+            ]).InvokeAsync(new InvocationConfiguration(), TestContext.Current.CancellationToken);
+
+            exitCode.Should().Be(0);
+        }
+        finally
+        {
+            AnsiConsole.Console = originalAnsiConsole;
+            Console.SetOut(originalOutput);
+        }
+
+        api.Messages.Should().HaveCount(3);
+        var requests = api.Messages.Select(message => JObject.Parse(message.Data)).ToList();
+        requests[0][nameof(ResolveResolutionPromisesRequest.ContinuationToken)]?.Value<string>().Should().BeNullOrEmpty();
+        requests[1][nameof(ResolveResolutionPromisesRequest.ContinuationToken)]?.Value<string>().Should().BeNullOrEmpty();
+        requests[2][nameof(ResolveResolutionPromisesRequest.ContinuationToken)]!.Value<string>().Should().Be("page-2");
+        output.ToString().Split("\"PromiseId\": \"promise-unresolved-1\"").Length.Should().Be(2);
     }
 
     [Theory]
@@ -1873,6 +1988,71 @@ public class CommandRegistrationTests
                     Results = []
                 },
                 _ => throw new InvalidOperationException($"No test response configured for {typeof(T).Name}.")
+            };
+
+            return Task.FromResult((T)response);
+        }
+    }
+
+    private sealed class BatchedResolutionPromisesCliApi : ICLIApi
+    {
+        public List<SerializedRequest> Messages { get; } = [];
+
+        public Task<T> PostAdminMessage<T>(SerializedRequest message, CancellationToken cancellationToken = default)
+        {
+            Messages.Add(message);
+            object response = typeof(T) == typeof(ResolveResolutionPromisesResponse)
+                ? new ResolveResolutionPromisesResponse { MoreResultsAvailable = false, Results = [] }
+                : throw new InvalidOperationException($"No test response configured for {typeof(T).Name}.");
+
+            return Task.FromResult((T)response);
+        }
+    }
+
+    private sealed class MutatingPagedResolutionPromisesCliApi : ICLIApi
+    {
+        public List<SerializedRequest> Messages { get; } = [];
+
+        public Task<T> PostAdminMessage<T>(SerializedRequest message, CancellationToken cancellationToken = default)
+        {
+            Messages.Add(message);
+            object response = Messages.Count switch
+            {
+                1 => new ResolveResolutionPromisesResponse
+                {
+                    MatchedCount = 2,
+                    ResolvedCount = 1,
+                    UnresolvedCount = 1,
+                    MoreResultsAvailable = true,
+                    ContinuationToken = "stale-page-token",
+                    Results =
+                    [
+                        new ResolveResolutionPromiseResult { PromiseId = "promise-resolved", Status = "Resolved" },
+                        new ResolveResolutionPromiseResult { PromiseId = "promise-unresolved-1", Status = "Unresolved" }
+                    ]
+                },
+                2 => new ResolveResolutionPromisesResponse
+                {
+                    MatchedCount = 1,
+                    UnresolvedCount = 1,
+                    MoreResultsAvailable = true,
+                    ContinuationToken = "page-2",
+                    Results =
+                    [
+                        new ResolveResolutionPromiseResult { PromiseId = "promise-unresolved-1", Status = "Unresolved" }
+                    ]
+                },
+                3 => new ResolveResolutionPromisesResponse
+                {
+                    MatchedCount = 1,
+                    UnresolvedCount = 1,
+                    MoreResultsAvailable = false,
+                    Results =
+                    [
+                        new ResolveResolutionPromiseResult { PromiseId = "promise-unresolved-2", Status = "Unresolved" }
+                    ]
+                },
+                _ => throw new InvalidOperationException("Resolve should complete after restarting once and advancing once.")
             };
 
             return Task.FromResult((T)response);

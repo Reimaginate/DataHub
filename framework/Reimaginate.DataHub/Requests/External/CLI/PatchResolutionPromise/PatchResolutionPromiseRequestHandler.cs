@@ -11,7 +11,7 @@ using Reimaginate.DataHub.SharedModels.Requests.CLI;
 using Reimaginate.DataServices;
 using Reimaginate.Mediator;
 
-namespace Reimaginate.DataHub.Requests.External.CLI.ResolutionPromises;
+namespace Reimaginate.DataHub.Requests.External.CLI.PatchResolutionPromise;
 
 public class PatchResolutionPromiseRequestHandler(IMediator mediator) : IHandler<PatchResolutionPromiseRequest, PatchResolutionPromiseResponse>
 {

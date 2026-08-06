@@ -1,11 +1,13 @@
 # DataHub Licensing
 
-DataHub version 1.4.0 is source-available under the
+The DataHub 1.4 Release Line, including every stable and prerelease version
+whose Semantic Versioning major and minor components are `1.4`, is
+licensed under the
 [Business Source License 1.1](../LICENSE). The SPDX identifier is
 `BUSL-1.1`, but the complete root `LICENSE` file is authoritative.
 
 BSL 1.1 is not an Open Source licence before the Change Date. DataHub
-version 1.4.0 changes to the MIT License on 28 July 2028.
+1.4 Release Line versions change to the MIT License on 28 July 2028.
 
 This guide explains the intended application of the licence; it is not legal
 advice.
@@ -113,26 +115,35 @@ GitHub Issues and Discussions are not licensing or support channels.
 
 ## Release Boundary
 
-This licence applies specifically to DataHub version 1.4.0 and the 11 named
-NuGet packages in the root `LICENSE`. It does not automatically apply to
-later versions.
+This licence applies specifically to every stable and prerelease DataHub
+version whose Semantic Versioning major and minor components are `1.4`, and
+to the 11 corresponding named NuGet packages in the root `LICENSE`. It does
+not automatically apply to another release line such as `1.5`.
 
-The intended first public distribution date is 28 July 2026. If source
-publication does not occur on that date, the release tag must not be created
-or moved. Reimaginate must choose a new exact Change Date, commit the updated
-licence and repeat all validation before publication.
+The intended first public distribution date for the release line is 28 July
+2026 and `v1.4.0` is its first public version. If that first source publication
+does not occur on the intended date, the release tag must not be created or
+moved. Reimaginate must choose a new exact Change Date, commit the updated
+licence and repeat all validation before publication. Later `1.4.x` snapshots
+reuse that established licence clock: their immutable private release tags
+must contain the finalised `v1.4.0` publication evidence, which the publisher
+checks against the annotated public `v1.4.0` tag.
 
-The public source snapshot must exist at the matching annotated `v1.4.0` tag
-before any v1.4.0 NuGet package is published.
+NuGet release automation publishes stable versions only and requires a public
+source snapshot at the matching annotated version tag before publication. The
+licence boundary still covers any `1.4.x` prerelease package created privately
+for validation, but release automation does not publish those packages or
+create corresponding public commits or tags.
 
 ## NuGet Packages
 
-BSL 1.1 is not declared as a NuGet licence expression. Each v1.4.0 DataHub
-package embeds the exact root `LICENSE` file, identifies it through
-`PackageLicenseFile` and requires licence acceptance.
+BSL 1.1 is not declared as a NuGet licence expression. Each `1.4.x` DataHub
+package produced by the release tooling embeds the exact root `LICENSE` file,
+identifies it through `PackageLicenseFile` and requires licence acceptance.
 
-Package validation checks the licensed version, exact Change Date, complete
-package list, canonical BSL terms and byte equality with the root licence.
+Package validation derives the release line from the package SemVer and
+checks the licensed release line, exact Change Date, complete package list,
+canonical BSL terms and byte equality with the root licence.
 The canonical terms are pinned from the
 [SPDX BUSL-1.1 text](https://spdx.org/licenses/BUSL-1.1.html) by SHA-256;
 only the Parameters and Additional Use Grant are customised.

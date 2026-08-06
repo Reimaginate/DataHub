@@ -12,7 +12,7 @@ public class ResolveResolutionPromisesRequest : DataHubCLIRequest<ResolveResolut
 
     public List<string> PromiseIds { get; set; } = [];
     public string WhereClause { get; set; }
-    public int PageSize { get; set; } = 1000;
+    public int PageSize { get; set; } = 500;
     public string ContinuationToken { get; set; }
     public bool DryRun { get; set; }
     public bool DoNotTrack { get; set; }

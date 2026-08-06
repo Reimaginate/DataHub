@@ -10,7 +10,7 @@ using Reimaginate.DataServices;
 using Reimaginate.DataServices.Responses;
 using Reimaginate.Mediator;
 
-namespace Reimaginate.DataHub.Requests.External.CLI.ResolutionPromises;
+namespace Reimaginate.DataHub.Requests.External.CLI.GetResolutionPromises;
 
 public class GetResolutionPromisesRequestHandler(IMediator mediator) : IHandler<GetResolutionPromisesRequest, GetResolutionPromisesResponse>
 {

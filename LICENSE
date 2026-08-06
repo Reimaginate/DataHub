@@ -2,11 +2,13 @@ Business Source License 1.1
 
 Parameters
 
-Licensor: Reimaginate Pty Ltd
+Licensor: Reimaginate Pty Ltd (ACN 612 753 125; ABN 28 612 753 125)
 
-Licensed Work: DataHub version 1.4.0, comprising the public source code,
-documentation, samples and tests distributed by the Licensor for that
-version, and the following version 1.4.0 NuGet packages:
+Licensed Work: DataHub 1.4 Release Line, comprising every stable or
+prerelease DataHub version whose Semantic Versioning major and minor
+components are 1.4, including the public source code and the documentation,
+samples and tests distributed by the Licensor for that version, and the
+following corresponding DataHub NuGet packages:
 
 - Reimaginate.DataHub.Abstractions
 - Reimaginate.DataHub.VirtualEntities.Abstractions

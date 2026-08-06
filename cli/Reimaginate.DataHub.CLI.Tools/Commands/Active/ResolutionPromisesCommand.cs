@@ -15,6 +15,7 @@ namespace Reimaginate.DataHub.CLI.Tools.Commands.Active;
 public sealed class ResolutionPromisesCommand : DataHubTopLevelCommand
 {
     private const int DeleteWherePageSize = 500;
+    private const int ResolveMaximumPageSize = 500;
     private const string DeletedStatus = "Deleted";
     private const string AlreadyDeletedReason = "Already deleted.";
     private readonly ICLIApi _api;
@@ -193,13 +194,14 @@ public sealed class ResolutionPromisesCommand : DataHubTopLevelCommand
         var command = ActiveCommandFactory.NewCommand("resolve", "Resolve selected resolution promises.", out var output);
         var ids = IdsOption();
         var where = new Option<string?>("--where") { Description = "Resolution promise query filter." };
+        var pageSize = ActiveCommandFactory.IntOption("--page-size", "Number of promises to resolve per request (maximum 500).", "--page");
         var dryRun = ActiveCommandFactory.BoolOption("--dry-run", "Preview matching promises without applying updates or deleting promises.");
         var doNotTrack = ActiveCommandFactory.BoolOption("--do-not-track", "Resolve references without writing DataHub change tracking entries.");
         var stopOnFailure = ActiveCommandFactory.BoolOption("--stop-on-failure", "Stop resolving when a recoverable per-promise failure is encountered.");
         var yes = ActiveCommandFactory.BoolOption("--yes", "Confirm resolution without prompting.");
         var properties = PropertiesOption();
         var additional = AdditionalPropertiesOption();
-        ActiveCommandFactory.Add(command, ids, where, dryRun, doNotTrack, stopOnFailure, yes, properties, additional);
+        ActiveCommandFactory.Add(command, ids, where, pageSize, dryRun, doNotTrack, stopOnFailure, yes, properties, additional);
         command.SetAction((parse, ct) => ActiveCommandFactory.RunLegacyAsync(parse, output, async () =>
         {
             var promiseIds = parse.GetValue(ids) ?? [];
@@ -222,6 +224,7 @@ public sealed class ResolutionPromisesCommand : DataHubTopLevelCommand
             {
                 PromiseIds = promiseIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                 WhereClause = whereClause,
+                PageSize = Math.Clamp(parse.GetValue(pageSize) ?? ResolveMaximumPageSize, 1, ResolveMaximumPageSize),
                 DryRun = isDryRun,
                 DoNotTrack = parse.GetValue(doNotTrack),
                 StopOnFailure = parse.GetValue(stopOnFailure)
@@ -350,35 +353,59 @@ public sealed class ResolutionPromisesCommand : DataHubTopLevelCommand
     {
         if (request.PromiseIds.Count > 0)
         {
-            return await Post<ResolveResolutionPromisesResponse>(request, cancellationToken);
+            var aggregate = new ResolveResolutionPromisesResponse();
+            var resultIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var promiseIds = request.PromiseIds;
+            var batchSize = Math.Clamp(request.PageSize, 1, ResolveMaximumPageSize);
+            foreach (var promiseIdBatch in promiseIds.Chunk(batchSize))
+            {
+                request.PromiseIds = promiseIdBatch.ToList();
+                request.ContinuationToken = null;
+                var seenContinuationTokens = new HashSet<string>(StringComparer.Ordinal);
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var page = await Post<ResolveResolutionPromisesResponse>(request, cancellationToken);
+                    AddResolvePage(aggregate, page, resultIndexes);
+                    if (!PrepareNextResolvePage(request, page, seenContinuationTokens))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            request.PromiseIds = promiseIds;
+            aggregate.ContinuationToken = null;
+            aggregate.MoreResultsAvailable = false;
+            return aggregate;
         }
 
         return await CliProgressHelper.RunAsync(async progress =>
         {
             var aggregate = new ResolveResolutionPromisesResponse();
+            var resultIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var seenContinuationTokens = new HashSet<string>(StringComparer.Ordinal);
             var progressTask = StartWhereProgress(progress, request.DryRun ? "Scanning matching promises" : "Resolving matching promises");
             var pageNumber = 0;
             try
             {
-                do
+                while (true)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     pageNumber++;
                     progressTask.Description = $"{ResolveWhereOperation(request.DryRun)}: loading page {pageNumber}, matched {aggregate.MatchedCount}, resolved {aggregate.ResolvedCount}, unresolved {aggregate.UnresolvedCount}, stale {aggregate.DeletedStaleCount}, failed {aggregate.FailedCount}";
 
                     var page = await Post<ResolveResolutionPromisesResponse>(request, cancellationToken);
-                    aggregate.MatchedCount += page.MatchedCount;
-                    aggregate.ResolvedCount += page.ResolvedCount;
-                    aggregate.UnresolvedCount += page.UnresolvedCount;
-                    aggregate.DeletedStaleCount += page.DeletedStaleCount;
-                    aggregate.FailedCount += page.FailedCount;
-                    aggregate.Results.AddRange(page.Results ?? []);
-                    request.ContinuationToken = page.MoreResultsAvailable ? page.ContinuationToken : null;
+                    AddResolvePage(aggregate, page, resultIndexes);
                     aggregate.ContinuationToken = page.ContinuationToken;
                     aggregate.MoreResultsAvailable = page.MoreResultsAvailable;
                     UpdateResolveWhereProgress(progressTask, request.DryRun, pageNumber, aggregate, page.Results?.Select(result => result.PromiseId));
                     cancellationToken.ThrowIfCancellationRequested();
-                } while (!string.IsNullOrWhiteSpace(request.ContinuationToken));
+                    if (!PrepareNextResolvePage(request, page, seenContinuationTokens))
+                    {
+                        break;
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -391,6 +418,84 @@ public sealed class ResolutionPromisesCommand : DataHubTopLevelCommand
             aggregate.ContinuationToken = null;
             return aggregate;
         });
+    }
+
+    private static bool PrepareNextResolvePage(
+        ResolveResolutionPromisesRequest request,
+        ResolveResolutionPromisesResponse page,
+        HashSet<string> seenContinuationTokens)
+    {
+        if (!page.MoreResultsAvailable)
+        {
+            request.ContinuationToken = null;
+            return false;
+        }
+
+        if (!request.DryRun && page.ResolvedCount + page.DeletedStaleCount > 0)
+        {
+            request.ContinuationToken = null;
+            seenContinuationTokens.Clear();
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(page.ContinuationToken))
+        {
+            throw new InvalidOperationException("The server reported more resolution promises without returning a continuation token.");
+        }
+
+        if (!seenContinuationTokens.Add(page.ContinuationToken))
+        {
+            throw new InvalidOperationException("The server returned a repeated resolution promise continuation token.");
+        }
+
+        request.ContinuationToken = page.ContinuationToken;
+        return true;
+    }
+
+    private static void AddResolvePage(
+        ResolveResolutionPromisesResponse aggregate,
+        ResolveResolutionPromisesResponse page,
+        Dictionary<string, int> resultIndexes)
+    {
+        foreach (var result in page.Results ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(result.PromiseId) && resultIndexes.TryGetValue(result.PromiseId, out var existingIndex))
+            {
+                AdjustResolveStatusCount(aggregate, aggregate.Results[existingIndex].Status, -1);
+                aggregate.Results[existingIndex] = result;
+                AdjustResolveStatusCount(aggregate, result.Status, 1);
+                continue;
+            }
+
+            var resultIndex = aggregate.Results.Count;
+            aggregate.Results.Add(result);
+            aggregate.MatchedCount++;
+            AdjustResolveStatusCount(aggregate, result.Status, 1);
+            if (!string.IsNullOrWhiteSpace(result.PromiseId))
+            {
+                resultIndexes[result.PromiseId] = resultIndex;
+            }
+        }
+    }
+
+    private static void AdjustResolveStatusCount(ResolveResolutionPromisesResponse aggregate, string? status, int adjustment)
+    {
+        if (string.Equals(status, "Resolved", StringComparison.OrdinalIgnoreCase))
+        {
+            aggregate.ResolvedCount += adjustment;
+        }
+        else if (string.Equals(status, "Unresolved", StringComparison.OrdinalIgnoreCase))
+        {
+            aggregate.UnresolvedCount += adjustment;
+        }
+        else if (string.Equals(status, "Stale", StringComparison.OrdinalIgnoreCase))
+        {
+            aggregate.DeletedStaleCount += adjustment;
+        }
+        else if (string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            aggregate.FailedCount += adjustment;
+        }
     }
 
     private static CliProgressTask StartWhereProgress(CliProgressContext progress, string operation)

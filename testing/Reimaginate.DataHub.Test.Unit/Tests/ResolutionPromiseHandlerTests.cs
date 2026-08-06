@@ -4,10 +4,16 @@ using OneOf;
 using Reimaginate.DataHub.DataAccess.Commands.DeleteCosmosDocuments;
 using Reimaginate.DataHub.DataAccess.Commands.UpsertCosmosDocuments;
 using Reimaginate.DataHub.DataAccess.Commands.UpsertDataHubEntities;
+using Reimaginate.DataHub.Helpers;
 using Reimaginate.DataHub.Models;
+using Reimaginate.DataHub.DataAccess.Queries.FindMatchingEntities;
 using Reimaginate.DataHub.DataAccess.Queries.GetCosmosDocuments;
+using Reimaginate.DataHub.Requests.External.Client.ResolveEntityReferences;
+using Reimaginate.DataHub.Requests.External.CLI.DeleteResolutionPromises;
+using Reimaginate.DataHub.Requests.External.CLI.GetResolutionPromises;
+using Reimaginate.DataHub.Requests.External.CLI.ListResolutionPromises;
+using Reimaginate.DataHub.Requests.External.CLI.PatchResolutionPromise;
 using Reimaginate.DataHub.Requests.External.CLI.ResolveResolutionPromises;
-using Reimaginate.DataHub.Requests.External.CLI.ResolutionPromises;
 using Reimaginate.DataHub.Requests.Internal.AddTrackedEntityChangeSets;
 using Reimaginate.DataHub.Requests.Internal.CreateDeferredEntityResolutionPromises;
 using Reimaginate.DataHub.Requests.Internal.FindEntitiesByAlternateKey;
@@ -374,6 +380,89 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
     }
 
     [Fact]
+    public async Task ResolveEntityReferences_client_handler_should_batch_projected_lookups_and_preserve_duplicate_results()
+    {
+        var uniqueReference = new ExternalEntityReference
+        {
+            DataSource = "SRC1",
+            SourceEntityType = "TypeA",
+            EntityType = "TargetType",
+            EntityId = "source-unique"
+        };
+        var duplicateReference = new ExternalEntityReference
+        {
+            DataSource = "SRC1",
+            SourceEntityType = "TypeA",
+            EntityType = "TargetType",
+            EntityId = "source-duplicate"
+        };
+        var mediator = new RecordingMediator(request => request switch
+        {
+            FindMatchingEntitiesQuery => new JArray(
+                FoundEntity("source-unique", "TargetType")[0],
+                FoundEntity("source-duplicate", "TargetType")[0],
+                FoundEntity("source-duplicate", "TargetType", "dh-source-duplicate-2")[0]),
+            _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
+        });
+
+        var response = await new ResolveEntityReferencesRequestHandler(mediator).HandleAsync(new ResolveEntityReferencesRequest
+        {
+            EntityReferences = [uniqueReference, duplicateReference]
+        }, CancellationToken.None);
+
+        response.Success.Should().BeTrue();
+        response.Results.Should().HaveCount(2);
+        response.ResolutionFailures.Should().ContainSingle();
+        response.Results.Single(result => result.SourceEntityReference == uniqueReference)
+            .DataHubEntityReference.EntityId.Should().Be("dh-source-unique");
+        response.Results.Single(result => result.SourceEntityReference == duplicateReference)
+            .DataHubEntityReference.Should().BeOfType<ExternalEntityReference>()
+            .Which._tag.Should().BeNull();
+
+        var lookupQuery = mediator.Requests.OfType<FindMatchingEntitiesQuery>().Should().ContainSingle().Subject;
+        lookupQuery.SelectClause.Should().Be("x.id,x.entityType,x.alternateKeys");
+        lookupQuery.Parameters
+            .Where(parameter => parameter.Name.StartsWith("entityId", StringComparison.Ordinal))
+            .Select(parameter => parameter.Value?.ToString())
+            .Should()
+            .BeEquivalentTo("source-unique", "source-duplicate");
+    }
+
+    [Fact]
+    public async Task ResolveEntityReferences_client_handler_should_limit_projected_lookup_batches_to_500_values()
+    {
+        var references = Enumerable.Range(1, 501)
+            .Select(index => new ExternalEntityReference
+            {
+                DataSource = "SRC1",
+                SourceEntityType = "TypeA",
+                EntityType = "TargetType",
+                EntityId = $"source-{index}"
+            })
+            .ToList();
+        var mediator = new RecordingMediator(request => request switch
+        {
+            FindMatchingEntitiesQuery find => new JArray(find.Parameters
+                .Where(parameter => parameter.Name.StartsWith("entityId", StringComparison.Ordinal))
+                .Select(parameter => FoundEntity(parameter.Value!.ToString()!, find.EntityType)[0])),
+            _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
+        });
+
+        var response = await new ResolveEntityReferencesRequestHandler(mediator).HandleAsync(new ResolveEntityReferencesRequest
+        {
+            EntityReferences = references
+        }, CancellationToken.None);
+
+        response.Success.Should().BeTrue();
+        response.Results.Should().HaveCount(501);
+        mediator.Requests.OfType<FindMatchingEntitiesQuery>()
+            .Select(query => query.Parameters.Count(parameter => parameter.Name.StartsWith("entityId", StringComparison.Ordinal)))
+            .Should().Equal(500, 1);
+        mediator.Requests.OfType<FindMatchingEntitiesQuery>()
+            .Should().OnlyContain(query => query.SelectClause == "x.id,x.entityType,x.alternateKeys");
+    }
+
+    [Fact]
     public async Task ResolveEntityReferenceResolutionPromises_should_resolve_across_pages_delete_resolved_subset_and_track_with_reference_timestamp()
     {
         await ScenarioBuilder.CreateScenario(TestDisplayName() ?? Humanize(nameof(ResolveEntityReferenceResolutionPromises_should_resolve_across_pages_delete_resolved_subset_and_track_with_reference_timestamp)), base.ServiceProvider)
@@ -530,7 +619,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             [p.EntityReferencePath] = Reference(p.ExternalEntityReference.DataSource, p.ExternalEntityReference.SourceEntityType, p.ExternalEntityReference.EntityType, p.ExternalEntityReference.EntityId)
                         }))
                         .ToList();
-                    DeleteCosmosDocumentsCommand<ResolutionPromise>? capturedDelete = null;
+                    var capturedDeletes = new List<DeleteCosmosDocumentsCommand<ResolutionPromise>>();
                     var mediator = new RecordingMediator(request =>
                     {
                         switch (request)
@@ -546,7 +635,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             case UpsertDataHubEntitiesCommand upsert:
                                 return new UpsertDataHubEntitiesResponse { Successes = upsert.Entities, Failures = [] };
                             case DeleteCosmosDocumentsCommand<ResolutionPromise> delete:
-                                capturedDelete = delete;
+                                capturedDeletes.Add(delete);
                                 return new DeleteCosmosDocumentsResponse<ResolutionPromise> { Successes = delete.Documents, Failures = [] };
                             default:
                                 throw new InvalidOperationException(request.GetType().FullName);
@@ -563,8 +652,10 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                     }, CancellationToken.None);
 
                     response.UpdatedDataHubEntities.Should().HaveCount(firstPageCount + secondPageCount);
-                    capturedDelete.Should().NotBeNull();
-                    capturedDelete!.Documents.Should().HaveCount(firstPageCount + secondPageCount);
+                    capturedDeletes.SelectMany(delete => delete.Documents).Should().HaveCount(firstPageCount + secondPageCount);
+                    capturedDeletes.Should().OnlyContain(delete => delete.Documents.Count <= 500);
+                    mediator.Requests.OfType<AddTrackedEntityChangeSetsRequest>().Should().OnlyContain(addTracking => addTracking.Requests.Count <= 100);
+                    mediator.Requests.OfType<UpsertDataHubEntitiesCommand>().Should().OnlyContain(upsert => upsert.Entities.Count <= 100);
                     mediator.Requests.OfType<GetCosmosDocumentsQuery<ResolutionPromise>>().Should().HaveCount(2);
 
                     return await ActionResult(currentObject, stash);
@@ -585,21 +676,16 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         {
             ["Parent"] = Reference("SRC1", "TypeA", "TargetType", "source-1")
         });
-        ProcessPatchEntitiesRequest? capturedPatch = null;
+        AddTrackedEntityChangeSetsRequest? capturedTracking = null;
+        UpsertDataHubEntitiesCommand? capturedUpsert = null;
         DeleteCosmosDocumentsCommand<ResolutionPromise>? capturedDelete = null;
         var mediator = new RecordingMediator(request => request switch
         {
             GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
             GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
-            FindEntitiesByAlternateKeyRequest find => FoundEntity(find.Value, find.EntityType),
-            ProcessPatchEntitiesRequest patch => Capture(patch, ref capturedPatch, new ProcessPatchEntitiesResponse
-            {
-                Results = patch.Requests.Select(patchRequest => new ProcessPatchEntityResponse
-                {
-                    RequestId = patchRequest.RequestId,
-                    Success = true
-                }).ToList()
-            }),
+            FindMatchingEntitiesQuery find => FoundEntity(LookupValue(find), find.EntityType),
+            AddTrackedEntityChangeSetsRequest tracking => Capture(tracking, ref capturedTracking, TrackingSuccess()),
+            UpsertDataHubEntitiesCommand upsert => Capture(upsert, ref capturedUpsert, UpsertSuccess(upsert)),
             DeleteCosmosDocumentsCommand<ResolutionPromise> delete => CaptureDelete(delete, ref capturedDelete),
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
@@ -613,20 +699,49 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         response.ResolvedCount.Should().Be(1);
         response.Results.Single().Status.Should().Be("Resolved");
         response.Results.Single().ResolvedEntityId.Should().Be("dh-source-1");
-        capturedPatch.Should().NotBeNull();
-        capturedPatch!.Requests.Should().ContainSingle();
-        var patchRequest = capturedPatch.Requests.Single();
-        patchRequest.DataSource.Should().Be(DataSources.DataHub);
-        patchRequest.EntityType.Should().Be("OwnerType");
-        patchRequest.EntityId.Should().Be("owner-1");
-        patchRequest.DoNotTrack.Should().BeFalse();
-        patchRequest.Silent.Should().BeFalse();
-        patchRequest.Operations.Should().ContainSingle();
-        var operation = patchRequest.Operations.Single();
-        operation.Operation.Should().Be("set");
-        operation.Path.Should().Be("Parent");
-        AssertResolvedReference(new JObject { ["Parent"] = operation.Value }, "Parent", "TargetType", "dh-source-1");
+        capturedTracking.Should().NotBeNull();
+        capturedTracking!.Requests.Should().ContainSingle().Which.TimeStamp.Should().Be(DateTimeOffset.Parse("2024-06-01T00:00:00Z"));
+        capturedUpsert.Should().NotBeNull();
+        AssertResolvedReference(capturedUpsert!.Entities.Single(), "Parent", "TargetType", "dh-source-1");
         capturedDelete!.Documents.Should().ContainSingle().Which.id.Should().Be("promise-1");
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
+    }
+
+    [Fact]
+    public async Task ResolveResolutionPromises_cli_handler_should_tolerate_an_already_deleted_promise()
+    {
+        var promise = Promise("promise-1", "OwnerType", "owner-1", "Parent", "SRC1", "TypeA", "TargetType", "source-1");
+        var owner = Entity("owner-1", "OwnerType", new JObject
+        {
+            ["Parent"] = Reference("SRC1", "TypeA", "TargetType", "source-1")
+        });
+        var mediator = new RecordingMediator(request => request switch
+        {
+            GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
+            GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
+            FindMatchingEntitiesQuery find => FoundEntity(LookupValue(find), find.EntityType),
+            AddTrackedEntityChangeSetsRequest => TrackingSuccess(),
+            UpsertDataHubEntitiesCommand upsert => UpsertSuccess(upsert),
+            DeleteCosmosDocumentsCommand<ResolutionPromise> => new DeleteCosmosDocumentsResponse<ResolutionPromise>
+            {
+                Successes = [],
+                Failures =
+                [
+                    new DataAccessFailure<ResolutionPromise>(
+                        promise,
+                        new InvalidOperationException("Response status code does not indicate success: NotFound (404)."))
+                ]
+            },
+            _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
+        });
+
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        {
+            PromiseIds = ["promise-1"]
+        }, CancellationToken.None);
+
+        response.ResolvedCount.Should().Be(1);
+        response.Results.Should().ContainSingle().Which.Status.Should().Be("Resolved");
     }
 
     [Fact]
@@ -641,7 +756,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         {
             GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
             GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
-            FindEntitiesByAlternateKeyRequest => new JArray(),
+            FindMatchingEntitiesQuery => new JArray(),
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
@@ -672,7 +787,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             ["owner-resolved"] = Entity("owner-resolved", "OwnerType", new JObject { ["Parent"] = Reference("SRC1", "TypeA", "TargetType", "source-resolved") }),
             ["owner-unresolved"] = Entity("owner-unresolved", "OwnerType", new JObject { ["Parent"] = Reference("SRC1", "TypeA", "TargetType", "source-unresolved") })
         };
-        ProcessPatchEntitiesRequest? capturedPatch = null;
+        UpsertDataHubEntitiesCommand? capturedUpsert = null;
         DeleteCosmosDocumentsCommand<ResolutionPromise>? capturedDelete = null;
         var mediator = new RecordingMediator(request => request switch
         {
@@ -681,17 +796,12 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             {
                 Results = getOwners.EntityIds.Where(owners.ContainsKey).Select(entityId => owners[entityId]).ToList()
             },
-            FindEntitiesByAlternateKeyRequest find when find.Value == "source-duplicate" => new JArray(FoundEntity(find.Value, find.EntityType)[0], FoundEntity(find.Value, find.EntityType)[0]),
-            FindEntitiesByAlternateKeyRequest find when find.Value == "source-resolved" => FoundEntity(find.Value, find.EntityType),
-            FindEntitiesByAlternateKeyRequest find when find.Value == "source-unresolved" => new JArray(),
-            ProcessPatchEntitiesRequest patch => Capture(patch, ref capturedPatch, new ProcessPatchEntitiesResponse
-            {
-                Results = patch.Requests.Select(patchRequest => new ProcessPatchEntityResponse
-                {
-                    RequestId = patchRequest.RequestId,
-                    Success = true
-                }).ToList()
-            }),
+            FindMatchingEntitiesQuery => new JArray(
+                FoundEntity("source-duplicate", "TargetType")[0],
+                FoundEntity("source-duplicate", "TargetType", "dh-source-duplicate-2")[0],
+                FoundEntity("source-resolved", "TargetType")[0]),
+            AddTrackedEntityChangeSetsRequest => TrackingSuccess(),
+            UpsertDataHubEntitiesCommand upsert => Capture(upsert, ref capturedUpsert, UpsertSuccess(upsert)),
             DeleteCosmosDocumentsCommand<ResolutionPromise> delete => CaptureDelete(delete, ref capturedDelete),
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
@@ -711,10 +821,17 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         response.Results.Single(result => result.PromiseId == "promise-resolved").Status.Should().Be("Resolved");
         response.Results.Single(result => result.PromiseId == "promise-unresolved").Status.Should().Be("Unresolved");
         response.Results.Single(result => result.PromiseId == "promise-stale").Status.Should().Be("Stale");
-        capturedPatch.Should().NotBeNull();
-        capturedPatch!.Requests.Should().ContainSingle().Which.EntityId.Should().Be("owner-resolved");
+        capturedUpsert.Should().NotBeNull();
+        capturedUpsert!.Entities.Should().ContainSingle().Which.DataHubEntityId().Should().Be("owner-resolved");
         capturedDelete.Should().NotBeNull();
         capturedDelete!.Documents.Select(promise => promise.id).Should().BeEquivalentTo(["promise-resolved", "promise-stale"]);
+        var lookupQuery = mediator.Requests.OfType<FindMatchingEntitiesQuery>().Should().ContainSingle().Subject;
+        lookupQuery.Parameters
+            .Where(parameter => parameter.Name.StartsWith("entityId", StringComparison.Ordinal))
+            .Select(parameter => parameter.Value?.ToString())
+            .Should()
+            .BeEquivalentTo("source-duplicate", "source-resolved", "source-unresolved");
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
     }
 
     [Fact]
@@ -729,9 +846,9 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         {
             GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
             GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
-            FindEntitiesByAlternateKeyRequest find => new JArray(FoundEntity(find.Value, find.EntityType)[0], FoundEntity(find.Value, find.EntityType)[0]),
-            ProcessPatchEntitiesRequest => throw new InvalidOperationException("Stop-on-failure should not patch owners."),
-            DeleteCosmosDocumentsCommand<ResolutionPromise> => throw new InvalidOperationException("Stop-on-failure should not delete promises."),
+            FindMatchingEntitiesQuery => new JArray(
+                FoundEntity("source-duplicate", "TargetType")[0],
+                FoundEntity("source-duplicate", "TargetType", "dh-source-duplicate-2")[0]),
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
@@ -748,8 +865,10 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             detail.Field == "AlternateKey" &&
             detail.Code == "DuplicateMatch" &&
             detail.Message == "TargetType:src1.typea=source-duplicate matched 2 entities.");
-        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
+        mediator.Requests.Should().NotContain(request => request is AddTrackedEntityChangeSetsRequest);
+        mediator.Requests.Should().NotContain(request => request is UpsertDataHubEntitiesCommand);
         mediator.Requests.Should().NotContain(request => request is DeleteCosmosDocumentsCommand<ResolutionPromise>);
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
     }
 
     [Fact]
@@ -764,9 +883,9 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         {
             GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
             GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
-            FindEntitiesByAlternateKeyRequest find => new JArray(FoundEntity(find.Value, find.EntityType)[0], FoundEntity(find.Value, find.EntityType)[0]),
-            ProcessPatchEntitiesRequest => throw new InvalidOperationException("Dry-run should not patch owners."),
-            DeleteCosmosDocumentsCommand<ResolutionPromise> => throw new InvalidOperationException("Dry-run should not delete promises."),
+            FindMatchingEntitiesQuery => new JArray(
+                FoundEntity("source-duplicate", "TargetType")[0],
+                FoundEntity("source-duplicate", "TargetType", "dh-source-duplicate-2")[0]),
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
@@ -780,8 +899,10 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         response.FailedCount.Should().Be(1);
         response.Results.Should().ContainSingle().Which.Status.Should().Be("Failed");
         response.Results.Single().Reason.Should().Be("Multiple entities found with matching alternate keys");
-        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
+        mediator.Requests.Should().NotContain(request => request is AddTrackedEntityChangeSetsRequest);
+        mediator.Requests.Should().NotContain(request => request is UpsertDataHubEntitiesCommand);
         mediator.Requests.Should().NotContain(request => request is DeleteCosmosDocumentsCommand<ResolutionPromise>);
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
     }
 
     [Fact]
@@ -796,7 +917,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         {
             GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
             GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
-            FindEntitiesByAlternateKeyRequest find => FoundEntity(find.Value, find.EntityType),
+            FindMatchingEntitiesQuery find => FoundEntity(LookupValue(find), find.EntityType),
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
@@ -808,34 +929,28 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
 
         response.ResolvedCount.Should().Be(1);
         response.Results.Single().Status.Should().Be("Resolved");
-        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
+        mediator.Requests.Should().NotContain(request => request is AddTrackedEntityChangeSetsRequest);
         mediator.Requests.Should().NotContain(request => request is UpsertDataHubEntitiesCommand);
         mediator.Requests.Should().NotContain(request => request is DeleteCosmosDocumentsCommand<ResolutionPromise>);
-        mediator.Requests.Should().NotContain(request => request is AddTrackedEntityChangeSetsRequest);
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
     }
 
     [Fact]
-    public async Task ResolveResolutionPromises_cli_handler_should_pass_do_not_track_to_patch_pipeline()
+    public async Task ResolveResolutionPromises_cli_handler_should_skip_tracking_when_do_not_track_is_true()
     {
         var promise = Promise("promise-1", "OwnerType", "owner-1", "Parent", "SRC1", "TypeA", "TargetType", "source-1");
         var owner = Entity("owner-1", "OwnerType", new JObject
         {
             ["Parent"] = Reference("SRC1", "TypeA", "TargetType", "source-1")
         });
-        ProcessPatchEntitiesRequest? capturedPatch = null;
+        UpsertDataHubEntitiesCommand? capturedUpsert = null;
         var mediator = new RecordingMediator(request => request switch
         {
             GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise> { Results = [promise] },
             GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse { Results = [owner] },
-            FindEntitiesByAlternateKeyRequest find => FoundEntity(find.Value, find.EntityType),
-            ProcessPatchEntitiesRequest patch => Capture(patch, ref capturedPatch, new ProcessPatchEntitiesResponse
-            {
-                Results = patch.Requests.Select(patchRequest => new ProcessPatchEntityResponse
-                {
-                    RequestId = patchRequest.RequestId,
-                    Success = true
-                }).ToList()
-            }),
+            FindMatchingEntitiesQuery find => FoundEntity(LookupValue(find), find.EntityType),
+            AddTrackedEntityChangeSetsRequest => throw new InvalidOperationException("Tracking should be skipped."),
+            UpsertDataHubEntitiesCommand upsert => Capture(upsert, ref capturedUpsert, UpsertSuccess(upsert)),
             DeleteCosmosDocumentsCommand<ResolutionPromise> delete => new DeleteCosmosDocumentsResponse<ResolutionPromise> { Successes = delete.Documents, Failures = [] },
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
@@ -846,9 +961,10 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             DoNotTrack = true
         }, CancellationToken.None);
 
-        capturedPatch.Should().NotBeNull();
-        capturedPatch!.DoNotTrack.Should().BeTrue();
-        capturedPatch.Requests.Should().ContainSingle().Which.DoNotTrack.Should().BeFalse();
+        capturedUpsert.Should().NotBeNull();
+        AssertResolvedReference(capturedUpsert!.Entities.Single(), "Parent", "TargetType", "dh-source-1");
+        mediator.Requests.Should().NotContain(request => request is AddTrackedEntityChangeSetsRequest);
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
     }
 
     [Fact]
@@ -870,15 +986,9 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             {
                 Results = getOwners.EntityIds.Select(entityId => owners[entityId]).ToList()
             },
-            FindEntitiesByAlternateKeyRequest find => FoundEntity(find.Value, find.EntityType),
-            ProcessPatchEntitiesRequest patch => new ProcessPatchEntitiesResponse
-            {
-                Results = patch.Requests.Select(patchRequest => new ProcessPatchEntityResponse
-                {
-                    RequestId = patchRequest.RequestId,
-                    Success = true
-                }).ToList()
-            },
+            FindMatchingEntitiesQuery find => FoundEntity(LookupValue(find), find.EntityType),
+            AddTrackedEntityChangeSetsRequest => TrackingSuccess(),
+            UpsertDataHubEntitiesCommand upsert => UpsertSuccess(upsert),
             DeleteCosmosDocumentsCommand<ResolutionPromise> delete => new DeleteCosmosDocumentsResponse<ResolutionPromise> { Successes = delete.Documents, Failures = [] },
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
@@ -900,17 +1010,38 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         promiseQueries.Select(query => query.WhereClause).Should().OnlyContain(whereClause => whereClause == "x.DataHubEntityType = @ownerType");
         promiseQueries.SelectMany(query => query.Parameters).Should().OnlyContain(parameter => parameter.Name == "ownerType" && Equals(parameter.Value, "OwnerType"));
         promiseQueries.Select(query => query.PageSize).Should().OnlyContain(pageSize => pageSize == 1);
+        promiseQueries.Select(query => query.OrderBy).Should().OnlyContain(orderBy => orderBy == "x.id");
         promiseQueries[0].ContinuationToken.Should().BeNullOrEmpty();
 
         mediator.Requests.OfType<GetDataHubEntitiesByIdRequest>().Should().ContainSingle();
-        mediator.Requests.OfType<FindEntitiesByAlternateKeyRequest>().Should().ContainSingle();
-        mediator.Requests.OfType<ProcessPatchEntitiesRequest>().Should().ContainSingle();
-        mediator.Requests.OfType<ProcessPatchEntitiesRequest>()
-            .SelectMany(request => request.Requests)
-            .Select(request => request.Operations)
-            .Should()
-            .OnlyContain(operations => operations.Count == 1);
+        mediator.Requests.OfType<FindMatchingEntitiesQuery>().Should().ContainSingle();
+        mediator.Requests.OfType<AddTrackedEntityChangeSetsRequest>().Should().ContainSingle();
+        mediator.Requests.OfType<UpsertDataHubEntitiesCommand>().Should().ContainSingle();
         mediator.Requests.OfType<DeleteCosmosDocumentsCommand<ResolutionPromise>>().Should().ContainSingle();
+        mediator.Requests.Should().NotContain(request => request is ProcessPatchEntitiesRequest);
+    }
+
+    [Theory]
+    [InlineData(5000, 500)]
+    [InlineData(0, 1)]
+    public async Task ResolveResolutionPromises_cli_handler_should_bound_requested_page_size(int requestedPageSize, int expectedPageSize)
+    {
+        GetCosmosDocumentsQuery<ResolutionPromise>? capturedQuery = null;
+        var mediator = new RecordingMediator(request => request switch
+        {
+            GetCosmosDocumentsQuery<ResolutionPromise> query => Capture(query, ref capturedQuery, new PagedResults<ResolutionPromise> { Results = [] }),
+            _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
+        });
+
+        await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        {
+            WhereClause = "x.DataHubEntityType = 'OwnerType'",
+            PageSize = requestedPageSize,
+            DryRun = true
+        }, CancellationToken.None);
+
+        capturedQuery.Should().NotBeNull();
+        capturedQuery!.PageSize.Should().Be(expectedPageSize);
     }
 
     [Fact]
@@ -1808,10 +1939,24 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
         });
     }
 
-    private static JArray FoundEntity(string sourceEntityId, string entityType)
+    private static string LookupValue(FindMatchingEntitiesQuery query)
     {
-        var dataHubEntityId = $"dh-{sourceEntityId}";
-        return new JArray(Entity(dataHubEntityId, entityType, new JObject
+        return query.Parameters.Single(parameter => parameter.Name == "entityId0").Value?.ToString()!;
+    }
+
+    private static AddTrackedEntityChangeSetsResponse TrackingSuccess()
+    {
+        return new AddTrackedEntityChangeSetsResponse { Successes = [], Failures = [] };
+    }
+
+    private static UpsertDataHubEntitiesResponse UpsertSuccess(UpsertDataHubEntitiesCommand command)
+    {
+        return new UpsertDataHubEntitiesResponse { Successes = command.Entities, Failures = [] };
+    }
+
+    private static JArray FoundEntity(string sourceEntityId, string entityType, string? dataHubEntityId = null)
+    {
+        return new JArray(Entity(dataHubEntityId ?? $"dh-{sourceEntityId}", entityType, new JObject
         {
             [nameof(DataHubEntity.alternateKeys)] = JArray.FromObject(new List<AlternateKey>
             {

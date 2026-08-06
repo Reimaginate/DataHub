@@ -1023,11 +1023,9 @@ public class ParameterizedRequestCoverageTests : ScenarioUnitTestBase
                         ["Requests/External/CLI/GetRoles/GetRolesRequestHandler.cs|Combine"] = 1,
                         ["Requests/External/CLI/GetRoles/GetRolesRequestHandler.cs|ToDataServiceParameters"] = 1,
                         ["Requests/External/CLI/GetUsers/GetUsersRequestHandler.cs|ToDataServiceParameters"] = 1,
-                        ["Requests/External/CLI/ResolutionPromises/DeleteResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
-                        ["Requests/External/CLI/ResolutionPromises/ListResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
+                        ["Requests/External/CLI/DeleteResolutionPromises/DeleteResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
+                        ["Requests/External/CLI/ListResolutionPromises/ListResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
                         ["Requests/External/CLI/ResolveResolutionPromises/ResolveResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
-                        ["Requests/External/CLI/ResolutionPromises/DeleteResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
-                        ["Requests/External/CLI/ResolutionPromises/ListResolutionPromisesRequestHandler.cs|ToDataServiceParameters"] = 1,
                         ["Requests/External/CLI/GetSyncFailuresWhere/GetSyncFailuresWhereRequestHandler.cs|Combine"] = 1,
                         ["Requests/External/CLI/GetSyncFailuresWhere/GetSyncFailuresWhereRequestHandler.cs|ToDataServiceParameters"] = 1,
                         ["Requests/External/CLI/GetSyncMarkers/GetSyncMarkersRequestHandler.cs|ToDataServiceParameters"] = 2

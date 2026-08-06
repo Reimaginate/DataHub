@@ -8,7 +8,7 @@ using Reimaginate.DataHub.SharedModels.Requests.CLI;
 using Reimaginate.DataServices.Responses;
 using Reimaginate.Mediator;
 
-namespace Reimaginate.DataHub.Requests.External.CLI.ResolutionPromises;
+namespace Reimaginate.DataHub.Requests.External.CLI.ListResolutionPromises;
 
 public class ListResolutionPromisesRequestHandler(IMediator mediator) : IHandler<ListResolutionPromisesRequest, ListResolutionPromisesResponse>
 {

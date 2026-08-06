@@ -1,7 +1,7 @@
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Requests.CLI;
 
-namespace Reimaginate.DataHub.Requests.External.CLI.ResolutionPromises;
+namespace Reimaginate.DataHub.Requests.External.CLI;
 
 internal static class ResolutionPromiseResultMapper
 {
