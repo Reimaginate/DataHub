@@ -318,58 +318,60 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
             throw new Exception("Invalid path");
         }
 
+        var value = operation.Value ?? JValue.CreateNull();
+
         if (parent.Type == JTokenType.Array)
         {
             var openBracketIndex = childPath.IndexOf("[", StringComparison.Ordinal);
             var index = int.Parse(childPath.Substring(openBracketIndex + 1, childPath.Length - openBracketIndex - 2));
-            ((JArray)parent).Insert(index, operation.Value);
+            ((JArray)parent).Insert(index, value);
         }
         else
         {
-            var valueType = operation.Value.Type;
-
-            if (valueType == JTokenType.String && operation.Value.Value<string>().StartsWith("^."))
+            if (value.Type == JTokenType.String && value.Value<string>().StartsWith("^.", StringComparison.Ordinal))
             {
-
-                var valuePath = operation.Value.Value<string>().Substring(2);
+                var valuePath = value.Value<string>().Substring(2);
                 var val = originalEntity.SelectToken(valuePath);
-                parent[childPath] = val;
+                parent[childPath] = val ?? JValue.CreateNull();
                 return;
             }
 
-            parent[childPath] = operation.Value;
+            parent[childPath] = value;
         }
     }
 
     private void ProcessSet(Patch operation, JToken token, JObject originalEntity)
     {
-        switch (token.Type)
+        var value = operation.Value ?? JValue.CreateNull();
+
+        if (token.Type == JTokenType.String)
         {
-            case JTokenType.String:
-
-                if (!string.IsNullOrEmpty(operation.Regex))
-                {
-                    var input = token.Value<string>();
-                    var replacement = operation.Value.Value<string>();
-                    var result = Regex.Replace(input, operation.Regex, replacement);
-                    token.Replace(result);
-                    return;
-                }
-
-                if (operation.Value.Value<string>().StartsWith("^."))
-                {
-                    var valuePath = operation.Value.Value<string>().Substring(2);
-                    var val = originalEntity.SelectToken(valuePath);
-                    token.Replace(val ?? JValue.CreateNull());
-                    return;
-                }
-
-                token.Replace(operation.Value);
+            if (!string.IsNullOrEmpty(operation.Regex))
+            {
+                var input = token.Value<string>();
+                var replacement = value.Value<string>();
+                var result = Regex.Replace(input, operation.Regex, replacement);
+                token.Replace(result);
                 return;
+            }
 
-            default:
-                token.Replace(operation.Value);
-                return;
+            if (value.Type == JTokenType.String && value.Value<string>().StartsWith("^.", StringComparison.Ordinal))
+            {
+                var valuePath = value.Value<string>().Substring(2);
+                value = originalEntity.SelectToken(valuePath) ?? JValue.CreateNull();
+            }
+        }
+
+        if (token is JValue { Type: JTokenType.Date } dateToken && value is JValue { Type: JTokenType.Date } replacementDate)
+        {
+            // JToken.Replace can treat DateTime and DateTimeOffset values with equal
+            // clock ticks as unchanged. Assign the value to preserve the actual instant,
+            // offset and DateTime kind even when that equality shortcut would apply.
+            dateToken.Value = replacementDate.Value;
+        }
+        else
+        {
+            token.Replace(value);
         }
     }
 

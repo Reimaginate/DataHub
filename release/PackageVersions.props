@@ -1,81 +1,81 @@
 <Project>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.Abstractions'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.VirtualEntities.Abstractions'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.SharedModels'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.Client'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.AspNetCore'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.TestFramework'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.TestFramework.XUnit'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.TestFramework.Agents.DataHub'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.CLI'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Reimaginate.DataHub.CLI.Tools'">
-    <VersionPrefix>1.4.1</VersionPrefix>
+    <VersionPrefix>1.4.2</VersionPrefix>
   </PropertyGroup>
   <ItemGroup>
     <DataHubPublicPackage Include="Reimaginate.DataHub.Abstractions">
       <ProjectPath>framework\Reimaginate.DataHub.Abstractions\Reimaginate.DataHub.Abstractions.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.VirtualEntities.Abstractions">
       <ProjectPath>framework\Reimaginate.DataHub.VirtualEntities.Abstractions\Reimaginate.DataHub.VirtualEntities.Abstractions.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.SharedModels">
       <ProjectPath>framework\Reimaginate.DataHub.SharedModels\Reimaginate.DataHub.SharedModels.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.Client">
       <ProjectPath>framework\Reimaginate.DataHub.Client\Reimaginate.DataHub.Client.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub">
       <ProjectPath>framework\Reimaginate.DataHub\Reimaginate.DataHub.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.AspNetCore">
       <ProjectPath>framework\Reimaginate.DataHub.AspNetCore\Reimaginate.DataHub.AspNetCore.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.TestFramework">
       <ProjectPath>testing\Reimaginate.DataHub.TestFramework\Reimaginate.DataHub.TestFramework.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.TestFramework.XUnit">
       <ProjectPath>testing\Reimaginate.DataHub.TestFramework.XUnit\Reimaginate.DataHub.TestFramework.XUnit.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.TestFramework.Agents.DataHub">
       <ProjectPath>testing\Reimaginate.DataHub.TestFramework.Agents.DataHub\Reimaginate.DataHub.TestFramework.Agents.DataHub.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.CLI">
       <ProjectPath>cli\Reimaginate.DataHub.CLI\Reimaginate.DataHub.CLI.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
     <DataHubPublicPackage Include="Reimaginate.DataHub.CLI.Tools">
       <ProjectPath>cli\Reimaginate.DataHub.CLI.Tools\Reimaginate.DataHub.CLI.Tools.csproj</ProjectPath>
-      <Version>1.4.1</Version>
+      <Version>1.4.2</Version>
     </DataHubPublicPackage>
   </ItemGroup>
 </Project>

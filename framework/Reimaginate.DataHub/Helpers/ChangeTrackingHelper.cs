@@ -134,10 +134,20 @@ internal static class ChangeTrackingHelper
             return (left, right);
         }
 
-        if (IsEquivalentMixedDateTokenPair(left, right, out var canonicalValue))
+        if (IsEquivalentDateTokenPair(left, right, out var canonicalValue))
         {
             var canonicalToken = new JValue(canonicalValue);
             return (canonicalToken, (JToken)canonicalToken.DeepClone());
+        }
+
+        if (left.Type == JTokenType.Date && right.Type == JTokenType.Date)
+        {
+            // Newtonsoft can compare DateTime and DateTimeOffset by clock ticks rather
+            // than instant. Diff round-trip strings for unequal dates so real changes
+            // are recorded and can be replayed without losing the incoming offset.
+            return (
+                new JValue(((JValue)left).ToString("O", CultureInfo.InvariantCulture)),
+                new JValue(((JValue)right).ToString("O", CultureInfo.InvariantCulture)));
         }
 
         if (IsEquivalentNumericTokenPair(left, right))
@@ -171,7 +181,7 @@ internal static class ChangeTrackingHelper
         return (left, right);
     }
 
-    private static bool IsEquivalentMixedDateTokenPair(JToken left, JToken right, out string canonicalValue)
+    private static bool IsEquivalentDateTokenPair(JToken left, JToken right, out string canonicalValue)
     {
         canonicalValue = null;
 
@@ -180,7 +190,7 @@ internal static class ChangeTrackingHelper
         var leftIsStringToken = left.Type == JTokenType.String;
         var rightIsStringToken = right.Type == JTokenType.String;
 
-        if (!((leftIsDateToken && rightIsStringToken) || (leftIsStringToken && rightIsDateToken)))
+        if (!((leftIsDateToken && (rightIsDateToken || rightIsStringToken)) || (leftIsStringToken && rightIsDateToken)))
         {
             return false;
         }
@@ -195,7 +205,11 @@ internal static class ChangeTrackingHelper
             return false;
         }
 
-        canonicalValue = leftDate.ToUniversalTime().ToString("O");
+        // An array diff may include unchanged elements. For date/date pairs retain
+        // the incoming representation so replay also retains its original offset.
+        canonicalValue = leftIsDateToken && rightIsDateToken
+            ? ((JValue)right).ToString("O", CultureInfo.InvariantCulture)
+            : leftDate.ToUniversalTime().ToString("O");
         return true;
     }
 
