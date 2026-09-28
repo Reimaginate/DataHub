@@ -173,7 +173,7 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
 
                         foreach (var prop in props)
                         {
-                            var propertyMergeRule = mergeRules.Rules.FirstOrDefault(w => string.Equals(w.PropertyName, prop.Key, StringComparison.CurrentCultureIgnoreCase) || w.PropertyName == "*");
+                            var propertyMergeRule = PropertyMergeRuleResolver.Resolve(mergeRules, prop.Key);
                             if (propertyMergeRule != null)
                             {
                                 switch (propertyMergeRule.Action)

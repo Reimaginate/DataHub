@@ -319,7 +319,7 @@ public class ProcessUpdatedEntitiesRequestHandler(IIdService idService, IMediato
 
                         foreach (var prop in props)
                         {
-                            var propertyMergeRule = GetPropertyMergeRule(mergeRules, prop.Key);
+                            var propertyMergeRule = PropertyMergeRuleResolver.Resolve(mergeRules, prop.Key);
                             if (propertyMergeRule != null)
                             {
                                 switch (propertyMergeRule.Action)
@@ -516,12 +516,6 @@ public class ProcessUpdatedEntitiesRequestHandler(IIdService idService, IMediato
         if (string.Equals(rule.SourceEntityType, sourceEntityType, StringComparison.CurrentCultureIgnoreCase)) score += 2;
         if (string.Equals(rule.Context, context, StringComparison.CurrentCultureIgnoreCase)) score += 1;
         return score;
-    }
-
-    private static PropertyMergeRule GetPropertyMergeRule(MergeRule mergeRules, string propertyName)
-    {
-        return mergeRules.Rules.FirstOrDefault(w => string.Equals(w.PropertyName, propertyName, StringComparison.CurrentCultureIgnoreCase))
-               ?? mergeRules.Rules.FirstOrDefault(w => w.PropertyName == "*");
     }
 
     private static bool IsEmptyValue(JToken token)
