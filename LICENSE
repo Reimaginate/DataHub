@@ -11,7 +11,7 @@ samples and tests distributed by the Licensor for that version, and the
 following corresponding DataHub NuGet packages:
 
 - Reimaginate.DataHub.Abstractions
-- Reimaginate.DataHub.VirtualTables.Abstractions
+- Reimaginate.DataHub.Dataverse.VirtualTables.Abstractions
 - Reimaginate.DataHub.SharedModels
 - Reimaginate.DataHub.Client
 - Reimaginate.DataHub
@@ -22,9 +22,10 @@ following corresponding DataHub NuGet packages:
 - Reimaginate.DataHub.CLI
 - Reimaginate.DataHub.CLI.Tools
 
-Reimaginate.DataHub.VirtualTables.Abstractions was previously distributed as
-Reimaginate.DataHub.VirtualEntities.Abstractions. Both package names refer to
-the same component within this Licensed Work.
+Reimaginate.DataHub.Dataverse.VirtualTables.Abstractions was previously
+distributed as Reimaginate.DataHub.VirtualTables.Abstractions and
+Reimaginate.DataHub.VirtualEntities.Abstractions. All three package names
+refer to the same component within this Licensed Work.
 
 Any Reimaginate component expressly distributed by the Licensor under a
 separate licence, and any third-party component identified by the Licensor as

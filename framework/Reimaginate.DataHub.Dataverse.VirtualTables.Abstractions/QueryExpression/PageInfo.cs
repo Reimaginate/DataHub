@@ -1,6 +1,6 @@
 ﻿using System.Runtime.Serialization;
 
-namespace Reimaginate.DataHub.VirtualTables.Abstractions.QueryExpression;
+namespace Reimaginate.DataHub.Dataverse.VirtualTables.Abstractions.QueryExpression;
 
 public class PageInfo
 {

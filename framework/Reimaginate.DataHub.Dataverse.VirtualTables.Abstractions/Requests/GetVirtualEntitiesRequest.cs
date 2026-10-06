@@ -1,6 +1,6 @@
-﻿using Reimaginate.DataHub.VirtualTables.Abstractions.Core;
+﻿using Reimaginate.DataHub.Dataverse.VirtualTables.Abstractions.Core;
 
-namespace Reimaginate.DataHub.VirtualTables.Abstractions.Requests;
+namespace Reimaginate.DataHub.Dataverse.VirtualTables.Abstractions.Requests;
 
 public class GetVirtualEntitiesRequest : VirtualEntitiesRequest<GetVirtualEntitiesResponse>
 {

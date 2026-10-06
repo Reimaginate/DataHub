@@ -1,4 +1,4 @@
-﻿namespace Reimaginate.DataHub.VirtualTables.Abstractions.Requests;
+﻿namespace Reimaginate.DataHub.Dataverse.VirtualTables.Abstractions.Requests;
 
 public class GetVirtualEntitiesResponse
 {
