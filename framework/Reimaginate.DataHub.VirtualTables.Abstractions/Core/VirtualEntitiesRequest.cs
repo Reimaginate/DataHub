@@ -1,6 +1,6 @@
 ﻿using Reimaginate.Mediator;
 
-namespace Reimaginate.DataHub.VirtualEntities.Abstractions.Core;
+namespace Reimaginate.DataHub.VirtualTables.Abstractions.Core;
 
 public abstract class VirtualEntitiesRequest<TResponse> : IRequest<TResponse>
 {

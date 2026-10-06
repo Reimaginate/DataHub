@@ -1,4 +1,4 @@
-﻿namespace Reimaginate.DataHub.VirtualEntities.Abstractions.Core;
+﻿namespace Reimaginate.DataHub.VirtualTables.Abstractions.Core;
 
 public class VirtualEntitiesMessage
 {

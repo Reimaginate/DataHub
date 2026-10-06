@@ -5,8 +5,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
-		<Description>Abstractions for DataHub virtual entity integrations and mediator-based virtual entity request contracts.</Description>
-		<PackageTags>datahub;virtual-entities;abstractions;contracts;reimaginate</PackageTags>
+		<Description>Abstractions for DataHub virtual table integrations and mediator-based virtual table request contracts.</Description>
+		<PackageTags>datahub;virtual-tables;abstractions;contracts;reimaginate</PackageTags>
 	</PropertyGroup>
 
 	<ItemGroup>
