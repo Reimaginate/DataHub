@@ -239,6 +239,14 @@ public class MergeUntrackedEntitiesRequestHandler(IMediator mediator, IEntityCon
             EntityReferences = refs
         }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
+        if (!resolveDataHubEntitiesResponse.Success)
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(resolveDataHubEntitiesResponse.FailureReason)
+                    ? "Entity reference resolution failed."
+                    : resolveDataHubEntitiesResponse.FailureReason);
+        }
+
         if (resolveDataHubEntitiesResponse.ResolutionFailures.Any())
         {
             results.AddRange(resolveDataHubEntitiesResponse.ResolutionFailures.Select(s => new MergeEntityResult()
