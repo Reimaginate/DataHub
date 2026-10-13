@@ -35,4 +35,10 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Opt in explicitly; timing measurements do not run in the normal unit suite. -->
+    <Compile Remove="Benchmarks\**\*.cs" />
+    <Compile Include="Benchmarks\**\*.cs" Condition="'$(RunMergePerformanceBenchmarks)' == 'true'" />
+  </ItemGroup>
+
 </Project>

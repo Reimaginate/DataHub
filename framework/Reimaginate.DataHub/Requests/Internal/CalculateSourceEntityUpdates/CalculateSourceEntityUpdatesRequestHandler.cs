@@ -19,8 +19,11 @@ public class CalculateSourceEntityUpdatesRequestHandler(IMediator mediator, ITim
 {
     public async Task<CalculateSourceEntityUpdatesResponse> HandleAsync(CalculateSourceEntityUpdatesRequest request, CancellationToken cancellationToken)
     {
+        // Validate every input, including unchanged keys, before advancing the source cache.
+        MergeBatchIntegrity.ValidateAlternateKeys(request.SourceEntity);
         var resultingInitTrackedEntityRequests = new List<InitTrackedEntityRequest>();
         var resultingSourceEntityUpdates = new List<AddTrackedEntityChangeSetRequest>();
+        var trackingEntries = request.OrderedChangeTrackingEntryCache ?? request.ChangeTrackingEntryCache.ToList();
         
         #region Get the current state of source entity being tracked by the ResultingEntity Hub
         
@@ -30,7 +33,7 @@ public class CalculateSourceEntityUpdatesRequestHandler(IMediator mediator, ITim
             EntityType = request.SourceEntityType,
             EntityId = request.SourceEntityId,
             AtPointInTime = request.SourceEntity.DateTimeOffsetValue(nameof(DataHubEntity.lastUpdated)),
-            TrackingEntries = request.ChangeTrackingEntryCache.Where(w => w.EntityId == request.SourceEntityId).ToList()
+            TrackingEntries = trackingEntries.Where(w => w.EntityId == request.SourceEntityId).ToList()
         }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
         #endregion
@@ -53,7 +56,7 @@ public class CalculateSourceEntityUpdatesRequestHandler(IMediator mediator, ITim
         }
         else
         {
-            var initEntry = request.ChangeTrackingEntryCache.Last(w => w.EntityId == request.SourceEntityId && w.EntryType == "Init");
+            var initEntry = trackingEntries.Last(w => w.EntityId == request.SourceEntityId && w.EntryType == "Init");
             var updateTimestamp = request.SourceEntity.DateTimeOffsetValue(nameof(DataHubEntity.lastUpdated)) ?? timeService.Now();
 
             if (updateTimestamp >= initEntry.Timestamp)
@@ -73,7 +76,7 @@ public class CalculateSourceEntityUpdatesRequestHandler(IMediator mediator, ITim
 
                 #endregion
 
-                if (entityDiffs?.HasValues == true)
+                if (entityDiffs?.HasValues == true || request.RetainUnchangedUpdate)
                 {
                     #region Add a change tracking entry for the changes
 
@@ -82,20 +85,29 @@ public class CalculateSourceEntityUpdatesRequestHandler(IMediator mediator, ITim
                         DataSource = request.DataSource,
                         EntityType = request.SourceEntityType,
                         SourceEntityId = request.SourceEntityId,
-                        ChangeSet = entityDiffs,
-                        TimeStamp = updateTimestamp
+                        ChangeSet = entityDiffs ?? new JObject(),
+                        TimeStamp = updateTimestamp,
+                        SourceEntityInput = request.SourceEntity,
+                        SourceEntityAlternateKeys = (JArray)request.SourceEntity[nameof(DataHubEntity.alternateKeys)]?.DeepClone()
                     };
                     resultingSourceEntityUpdates.Add(addChangeSetRequest);
 
-                    request.ChangeTrackingEntryCache.Add(new ChangeTrackingEntry()
+                    var trackingEntry = new ChangeTrackingEntry()
                     {
                         EntryType = ChangeTrackingEntryTypes.Update,
                         DataSource = request.DataSource,
                         EntityType = request.SourceEntityType,
                         EntityId = request.SourceEntityId,
                         Data = entityDiffs,
-                        Timestamp = request.SourceEntity.DateTimeOffsetValue(nameof(DataHubEntity.lastUpdated)) ?? timeService.Now()
-                    });
+                        Timestamp = updateTimestamp
+                    };
+                    if (entityDiffs?.HasValues == true)
+                    {
+                        if (request.OrderedChangeTrackingEntryCache != null)
+                            request.OrderedChangeTrackingEntryCache.Add(trackingEntry);
+                        else
+                            request.ChangeTrackingEntryCache.Add(trackingEntry);
+                    }
 
                     #endregion
                 }

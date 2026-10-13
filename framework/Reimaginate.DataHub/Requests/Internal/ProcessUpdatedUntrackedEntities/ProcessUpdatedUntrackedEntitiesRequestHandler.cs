@@ -70,7 +70,7 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
         {
             updatedDataHubEntities.ForEach(e => { e[nameof(DataHubEntity.lastUpdated)] = timeService.Now(); });
 
-            _ = (await mediator.SendAsync(new UpsertDataHubEntitiesCommand()
+            var upsertResponse = (await mediator.SendAsync(new UpsertDataHubEntitiesCommand()
             {
                 Entities = updatedDataHubEntities.Select(s => s.RemoveNullValues()).ToList()
             }, cancellationToken)) switch { { IsT1: true } result => throw result.AsT1, { AsT0: var mediatorResultValue } => mediatorResultValue };
@@ -79,13 +79,15 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
             {
                 var dataHubEntityId = s.DataHubEntityId();
                 var sourceEntityId = resolvedEntityIdMap[dataHubEntityId].EntityId;
+                var failure = upsertResponse.Failures.FirstOrDefault(f => f.Item.DataHubEntityId() == dataHubEntityId);
                 return new MergeEntityResult()
                 {
                     DataSource = request.DataSource,
                     SourceEntityType = request.SourceEntityType,
                     SourceEntityId = sourceEntityId,
                     DataHubEntityType = request.DataHubEntityType,
-                    MergeOutcome = MergeOutcomes.EntityMatchedAndUpdated,
+                    MergeOutcome = failure == null ? MergeOutcomes.EntityMatchedAndUpdated : MergeOutcomes.MergeFailed,
+                    FailureReason = failure?.Error?.Message,
                     DataHubEntityId = dataHubEntityId,
                     ResultingDataHubEntity = s,
                     ResultingDataHubEntityUpdates = s
@@ -96,7 +98,8 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
 
     private async Task<List<JObject>> CalculateUpdatedDataHubEntities(ProcessUpdatedUntrackedEntitiesRequest request, List<JObject> dataHubEntities, List<MergeEntityResult> results, CancellationToken cancellationToken)
     {
-        var updatedDataHubEntities = new List<JObject>();
+        var workingEntities = dataHubEntities.ToDictionary(e => e.DataHubEntityId());
+        var updatedDataHubEntities = new Dictionary<string, JObject>();
 
         foreach (var mergeRequest in request.MergeRequests)
         {
@@ -107,7 +110,7 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
 
             try
             {
-                var targetEntity = dataHubEntities.First(w => w.DataHubEntityId() == resolvedReference.DataHubEntityReference.EntityId);
+                var targetEntity = workingEntities[resolvedReference.DataHubEntityReference.EntityId];
                 var updatedEntity = (JObject)targetEntity.DeepClone();
 
                 var mergeData = (JObject)mergeRequest.Data.DeepClone();
@@ -183,6 +186,14 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
                                         break;
 
                                     case PropertyMergeRuleActions.OverwriteIfNewer:
+                                        // Use the document timestamp as the freshness proxy. Read
+                                        // the incoming time from the original payload: wildcard rules
+                                        // may already have removed lastUpdated from mergeData.
+                                        if (targetEntity.DateTimeOffsetValueRequired(nameof(DataHubEntity.lastUpdated)) >
+                                            mergeRequest.Data.DateTimeOffsetValueRequired(nameof(DataHubEntity.lastUpdated)))
+                                        {
+                                            mergeData.RemoveProperty(prop.Key);
+                                        }
                                         break;
 
                                     case PropertyMergeRuleActions.OverwriteIfEmpty:
@@ -228,7 +239,9 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
                 updatedEntity[nameof(DataHubEntity.alternateKeys)] = JArray.FromObject(currentDataHubAlternateKeys, new JsonSerializer() { NullValueHandling = NullValueHandling.Ignore });
                 updatedEntity[nameof(DataHubEntity.entityType)] = mergeRequest.DataHubEntityType;
 
-                updatedDataHubEntities.Add(updatedEntity);
+                // Later items must build on accepted earlier updates, including partial fields.
+                workingEntities[updateDataHubEntityId] = updatedEntity;
+                updatedDataHubEntities[updateDataHubEntityId] = updatedEntity;
             }
             catch (Exception ex)
             {
@@ -245,7 +258,7 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
             }
         }
 
-        return updatedDataHubEntities;
+        return updatedDataHubEntities.Values.ToList();
     }
 
     private MergeRule MergeRules(EntityConfig entityConfig, string dataSource, string sourceEntityType)
@@ -301,9 +314,11 @@ public class ProcessUpdatedUntrackedEntitiesRequestHandler(IMediator mediator, I
                 f.SourceEntityReference.EntityId == mergeRequest.SourceEntityId &&
                 f.SourceEntityReference.SourceEntityType == mergeRequest.SourceEntityType &&
                 f.SourceEntityReference.DataSource == mergeRequest.DataSource).DataHubEntityReference.EntityId)
+            .Distinct()
             .ToList();
 
-        var resolvedEntityIdMap = request.ResolvedReferencedEntities.ToDictionary(k => k.DataHubEntityReference.EntityId, v => v.SourceEntityReference);
+        var resolvedEntityIdMap = request.ResolvedReferencedEntities.GroupBy(r => r.DataHubEntityReference.EntityId)
+            .ToDictionary(g => g.Key, g => g.First().SourceEntityReference);
 
         return (results, dataHubEntityIds, resolvedEntityIdMap);
     }

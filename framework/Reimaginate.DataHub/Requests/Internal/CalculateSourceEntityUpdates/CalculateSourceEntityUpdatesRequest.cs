@@ -1,5 +1,6 @@
 ﻿using System.Collections.Concurrent;
 using Newtonsoft.Json.Linq;
+using System.Collections.Generic;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.Mediator;
 
@@ -13,4 +14,7 @@ public class CalculateSourceEntityUpdatesRequest : IRequest<CalculateSourceEntit
     public JObject SourceEntity { get; set; }
 
     public ConcurrentBag<ChangeTrackingEntry> ChangeTrackingEntryCache { get; set; }
+    // Batch merges use a per-source ordered cache; retain the existing cache for other callers.
+    public List<ChangeTrackingEntry> OrderedChangeTrackingEntryCache { get; set; }
+    internal bool RetainUnchangedUpdate { get; set; }
 }

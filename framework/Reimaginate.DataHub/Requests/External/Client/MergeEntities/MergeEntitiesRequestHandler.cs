@@ -47,11 +47,8 @@ public class MergeEntitiesRequestHandler(IMediator mediator, IEntityConfigServic
 
             foreach (var group in entityTypeGroup)
             {
-                var mergeRequests = request.Requests
-                    .Where(w => w.DataSource == group.Key.DataSource
-                                && w.SourceEntityType == group.Key.SourceEntityType
-                                && w.DataHubEntityType == group.Key.DataHubEntityType)
-                    .ToList();
+                var mergeRequests = MergeRequestOrdering.SortSourceVersions(group, results);
+                if (!mergeRequests.Any()) continue;
 
                 var entityConfig = await entityConfigService.GetEntityConfig(group.Key.DataHubEntityType, cancellationToken);
                 var resolvedDataHubEntities = await ResolveDataHubEntities(mergeRequests, results, group.Key.DataSource, group.Key.DataHubEntityType, cancellationToken);

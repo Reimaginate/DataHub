@@ -31,7 +31,8 @@ public class MergeExistingUntrackedEntitiesRequestHandler(IIdService idService, 
             mergeRequests.RemoveRange(0, mergeRequestsBatch.Count);
         }
 
-        var resultingDataHubEntities = results.Where(w => w.MergeOutcome == MergeOutcomes.EntityMatchedAndUpdated).Select(s => s.ResultingDataHubEntity).ToList();
+        var resultingDataHubEntities = results.Where(w => w.MergeOutcome == MergeOutcomes.EntityMatchedAndUpdated)
+            .GroupBy(r => r.DataHubEntityId).Select(g => g.Last().ResultingDataHubEntity).ToList();
 
         var dataHubEntitiesToResolveReferences = resultingDataHubEntities.Where(entity => entity
                 .ExternalEntityReferences()
@@ -122,7 +123,8 @@ public class MergeExistingUntrackedEntitiesRequestHandler(IIdService idService, 
     private static (List<MergeEntityResult> results, List<MergeEntityRequest> mergeRequests, List<ResolvedEntityReference> resolvedReferencedEntities) InitializeVars(MergeExistingUntrackedEntitiesRequest request)
     {
         var results = new List<MergeEntityResult>();
-        var mergeRequests = new List<MergeEntityRequest>(request.MergeRequests);
+        var mergeRequests = MergeRequestOrdering.SortSourceVersions(request.MergeRequests, results);
+        mergeRequests = MergeBatchIntegrity.ExcludeConflictingSources(mergeRequests, request.ResolvedDataHubEntities, results);
         return (results, mergeRequests, request.ResolvedDataHubEntities);
     }
 

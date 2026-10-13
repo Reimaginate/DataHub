@@ -41,7 +41,8 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
             mergeRequests.RemoveRange(0, batch.Count);
         }
 
-        var resultingDataHubEntities = results.Where(w => w.MergeOutcome == MergeOutcomes.EntityMatchedAndUpdated).Select(s => s.ResultingDataHubEntity).ToList();
+        var resultingDataHubEntities = results.Where(w => w.MergeOutcome == MergeOutcomes.EntityMatchedAndUpdated)
+            .GroupBy(r => r.DataHubEntityId).Select(g => g.Last().ResultingDataHubEntity).ToList();
 
         var dataHubEntitiesToResolveReferences = resultingDataHubEntities.Where(entity => entity
                 .ExternalEntityReferences()
@@ -114,49 +115,75 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
 
     private async Task<List<MergeEntityResult>> ProcessMergeRequestBatch(List<MergeEntityRequest> mergeRequestsBatch, MergeExistingEntitiesRequest request, List<MergeEntityRequest> mergeRequests, CancellationToken cancellationToken)
     {
-        var initTrackedEntityRequests = new ConcurrentBag<InitTrackedEntityRequest>();
-        var sourceSystemEntityUpdates = new ConcurrentBag<AddTrackedEntityChangeSetRequest>();
-        var sourceEntityIds = mergeRequestsBatch.Select(s => s.SourceEntityId).ToList();
+        var initialisationsByInput = new List<InitTrackedEntityRequest>[mergeRequestsBatch.Count];
+        var updatesByInput = new List<AddTrackedEntityChangeSetRequest>[mergeRequestsBatch.Count];
+        var sourceEntityIds = mergeRequestsBatch.Select(s => s.SourceEntityId).Distinct().ToList();
         var results = new ConcurrentBag<MergeEntityResult>();
 
         var sourceSystemEntityTrackingEntries = await SourceEntityTrackingEntries(request, cancellationToken, sourceEntityIds);
-        var changeTrackingCache = new ConcurrentBag<ChangeTrackingEntry>(sourceSystemEntityTrackingEntries);
+        var trackingEntriesBySource = sourceSystemEntityTrackingEntries.ToLookup(e => e.EntityId);
 
         #region CalculateChangesToSourceEntities
 
-        await Parallel.ForEachAsync(mergeRequestsBatch, new ParallelOptions()
+        // Calculate successive deltas in source timestamp order. Independent sources
+        // still run concurrently; flatten their results by original ordinal afterwards.
+        var sourceGroups = mergeRequestsBatch.Select((item, index) => (Request: item, Index: index))
+            .GroupBy(item => item.Request.SourceEntityId);
+        await Parallel.ForEachAsync(sourceGroups, new ParallelOptions()
         {
             MaxDegreeOfParallelism = Environment.ProcessorCount,
             CancellationToken = cancellationToken
-        }, async (mergeRequest, ct) =>
+        }, async (sourceGroup, ct) =>
         {
-            try
+            var changeTrackingCache = trackingEntriesBySource[sourceGroup.Key].ToList();
+            foreach (var item in sourceGroup)
             {
-                var calculateSourceEntityUpdatesResponse = (await mediator.TrySend(new CalculateSourceEntityUpdatesRequest()
+                var mergeRequest = item.Request;
+                try
                 {
-                    DataSource = mergeRequest.DataSource,
-                    SourceEntityType = mergeRequest.SourceEntityType,
-                    SourceEntityId = mergeRequest.SourceEntityId,
-                    SourceEntity = mergeRequest.Data,
-                    ChangeTrackingEntryCache = changeTrackingCache
-                }, ct)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
+                    var calculateSourceEntityUpdatesResponse = (await mediator.TrySend(new CalculateSourceEntityUpdatesRequest()
+                    {
+                        DataSource = mergeRequest.DataSource,
+                        SourceEntityType = mergeRequest.SourceEntityType,
+                        SourceEntityId = mergeRequest.SourceEntityId,
+                        SourceEntity = mergeRequest.Data,
+                        RetainUnchangedUpdate = sourceGroup.Count() > 1,
+                        OrderedChangeTrackingEntryCache = changeTrackingCache
+                    }, ct)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
-                calculateSourceEntityUpdatesResponse.ResultingInitTrackedEntityRequests.ForEach(e => initTrackedEntityRequests.Add(e));
-                calculateSourceEntityUpdatesResponse.ResultingSourceEntityUpdates.ForEach(e => sourceSystemEntityUpdates.Add(e));
-            }
-            catch (Exception ex)
-            {
-                results.Add(new MergeEntityResult()
+                    initialisationsByInput[item.Index] = calculateSourceEntityUpdatesResponse.ResultingInitTrackedEntityRequests;
+                    updatesByInput[item.Index] = calculateSourceEntityUpdatesResponse.ResultingSourceEntityUpdates;
+                    foreach (var initialisation in initialisationsByInput[item.Index])
+                    {
+                        // Make a newly initialised source visible to later items in this batch.
+                        changeTrackingCache.Add(new ChangeTrackingEntry
+                        {
+                            EntryType = ChangeTrackingEntryTypes.Init,
+                            DataSource = initialisation.DataSource,
+                            EntityType = initialisation.EntityType,
+                            EntityId = initialisation.EntityId,
+                            Timestamp = initialisation.Timestamp.Value,
+                            Data = (JObject)initialisation.EntityData.DeepClone()
+                        });
+                    }
+                }
+                catch (Exception ex)
                 {
-                    DataSource = mergeRequest?.DataSource,
-                    SourceEntityType = mergeRequest?.SourceEntityType,
-                    SourceEntityId = mergeRequest?.SourceEntityId,
-                    DataHubEntityType = mergeRequest?.DataHubEntityType,
-                    MergeOutcome = MergeOutcomes.MergeFailed,
-                    FailureReason = ex.Message
-                });
+                    results.Add(new MergeEntityResult()
+                    {
+                        DataSource = mergeRequest?.DataSource,
+                        SourceEntityType = mergeRequest?.SourceEntityType,
+                        SourceEntityId = mergeRequest?.SourceEntityId,
+                        DataHubEntityType = mergeRequest?.DataHubEntityType,
+                        MergeOutcome = MergeOutcomes.MergeFailed,
+                        FailureReason = ex.Message
+                    });
+                }
             }
         });
+
+        var initTrackedEntityRequests = initialisationsByInput.Where(items => items != null).SelectMany(items => items).ToList();
+        var sourceSystemEntityUpdates = updatesByInput.Where(items => items != null).SelectMany(items => items).ToList();
 
         #endregion
 
@@ -174,16 +201,17 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
 
         if (sourceSystemEntityUpdates.Any())
         {
-            var dataHubChangeTrackingEntries = await ConvertSourceEntityChangesToDataHubChangeTrackingEntries(sourceSystemEntityUpdates.ToList(), request, cancellationToken);
+            var sourceChangesByTrackingEntry = new Dictionary<ChangeTrackingEntry, AddTrackedEntityChangeSetRequest>();
+            var dataHubChangeTrackingEntries = await ConvertSourceEntityChangesToDataHubChangeTrackingEntries(sourceSystemEntityUpdates, request, sourceChangesByTrackingEntry, cancellationToken);
 
             var alternateKeyUpdates = sourceSystemEntityUpdates.Where(w => w.ChangeSet.ContainsKey(nameof(DataHubEntity.alternateKeys))
                                                                            && w.ChangeSet[nameof(DataHubEntity.alternateKeys)] != null
                                                                            && w.ChangeSet[nameof(DataHubEntity.alternateKeys)]!.HasValues
             ).ToList();
 
-            if (dataHubChangeTrackingEntries.Any() || alternateKeyUpdates.Any())
+            if (dataHubChangeTrackingEntries.Any(e => e.Data.HasValues) || alternateKeyUpdates.Any())
             {
-                var batchResults = await ProcessUpdatedEntities(request, mergeRequests, dataHubChangeTrackingEntries, alternateKeyUpdates, cancellationToken);
+                var batchResults = await ProcessUpdatedEntities(request, mergeRequests, dataHubChangeTrackingEntries, alternateKeyUpdates, sourceChangesByTrackingEntry, cancellationToken);
                 batchResults.ForEach(e => results.Add(e));
             }
         }
@@ -217,17 +245,64 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
             });
         }
 
-        await CommitSourceEntityUpdatesToDb(cancellationToken, sourceSystemEntityUpdates.ToList(), sourceEntitiesWithFailedUpdates);
+        await CommitSourceEntityUpdatesToDb(cancellationToken, sourceSystemEntityUpdates, sourceSystemEntityTrackingEntries, initTrackedEntityRequests, request, results);
 
         return results.ToList();
     }
 
-    private async Task CommitSourceEntityUpdatesToDb(CancellationToken cancellationToken, List<AddTrackedEntityChangeSetRequest> sourceSystemEntityUpdates, List<string> sourceEntitiesWithFailedUpdates)
+    private async Task CommitSourceEntityUpdatesToDb(CancellationToken cancellationToken, List<AddTrackedEntityChangeSetRequest> sourceSystemEntityUpdates,
+        List<ChangeTrackingEntry> originalTrackingEntries, List<InitTrackedEntityRequest> initialisations, MergeExistingEntitiesRequest request, ConcurrentBag<MergeEntityResult> results)
     {
-        var successfullyMergedChangeSets = sourceSystemEntityUpdates.Where(w => !sourceEntitiesWithFailedUpdates.Contains(w.SourceEntityId)).ToList();
+        // Only a skipped change followed by an accepted change needs rebasing. Ordinary
+        // batches and entirely successful repeated-source batches retain their deltas.
+        var excludedSourceIds = sourceSystemEntityUpdates.Where(s => s.ExcludeFromSourceHistory).Select(s => s.SourceEntityId).ToHashSet();
+        ILookup<string, ChangeTrackingEntry> originalsBySource = null;
+        ILookup<string, InitTrackedEntityRequest> initialisationsBySource = null;
+        foreach (var group in sourceSystemEntityUpdates.Where(s => excludedSourceIds.Contains(s.SourceEntityId)).GroupBy(s => s.SourceEntityId))
+        {
+            var afterSkippedChange = false;
+            JObject working = null;
+            foreach (var update in group)
+            {
+                if (update.ExcludeFromSourceHistory)
+                {
+                    afterSkippedChange = true;
+                    continue;
+                }
+                if (!afterSkippedChange) continue;
+
+                if (working == null)
+                {
+                    originalsBySource ??= originalTrackingEntries.ToLookup(e => e.EntityId);
+                    initialisationsBySource ??= initialisations.ToLookup(i => i.EntityId);
+                    var priorEntries = originalsBySource[group.Key].ToList();
+                    priorEntries.AddRange(initialisationsBySource[group.Key].Select(i => new ChangeTrackingEntry
+                    {
+                        EntryType = ChangeTrackingEntryTypes.Init, EntityId = i.EntityId, EntityType = i.EntityType,
+                        DataSource = i.DataSource, Timestamp = i.Timestamp.Value, Data = i.EntityData
+                    }));
+                    priorEntries.AddRange(group.TakeWhile(s => !ReferenceEquals(s, update)).Where(s => !s.ExcludeFromSourceHistory).Select(s => new ChangeTrackingEntry
+                    {
+                        EntryType = ChangeTrackingEntryTypes.Update, EntityId = s.SourceEntityId, EntityType = s.EntityType,
+                        DataSource = s.DataSource, Timestamp = s.TimeStamp, Data = s.ChangeSet
+                    }));
+                    working = ChangeTrackingHelper.ReassembleEntity(priorEntries);
+                }
+
+                // Recalculate from the accepted state and fields actually supplied by
+                // this input. Omitted fields from a rejected observation stay omitted.
+                var next = update.SourceEntityInput == null
+                    ? MergeBatchIntegrity.ApplyChange(working, update.ChangeSet)
+                    : MergeBatchIntegrity.MergeInput(working, update.SourceEntityInput);
+                update.ChangeSet = ChangeTrackingHelper.StripBaseProperties(
+                    ChangeTrackingHelper.DiffIgnoringEquivalentValueTokens(working, next) as JObject) ?? new JObject();
+                working = next;
+            }
+        }
+        var successfullyMergedChangeSets = sourceSystemEntityUpdates.Where(w => !w.ExcludeFromSourceHistory && w.ChangeSet.HasValues).ToList();
         if (successfullyMergedChangeSets.Any())
         {
-            _ = (await mediator.SendAsync(new UpsertCosmosDocumentsCommand<ChangeTrackingEntry>()
+            var response = (await mediator.SendAsync(new UpsertCosmosDocumentsCommand<ChangeTrackingEntry>()
             {
                 Documents = successfullyMergedChangeSets.Select(s => new ChangeTrackingEntry()
                 {
@@ -240,6 +315,16 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
                     Data = ChangeTrackingHelper.StripBaseProperties(JObject.FromObject(s.ChangeSet))
                 }).ToList()
             }, cancellationToken)) switch { { IsT1: true } result => throw result.AsT1, { AsT0: var mediatorResultValue } => mediatorResultValue };
+            foreach (var failure in response.Failures)
+            {
+                results.Add(new MergeEntityResult
+                {
+                    DataSource = request.DataSource, SourceEntityType = request.SourceEntityType,
+                    DataHubEntityType = request.DataHubEntityType, SourceEntityId = failure.Item.EntityId,
+                    DataHubEntityId = request.ResolvedDataHubEntities.First(r => r.SourceEntityReference.EntityId == failure.Item.EntityId).DataHubEntityReference.EntityId,
+                    MergeOutcome = MergeOutcomes.MergeFailed, FailureReason = failure.Error?.Message
+                });
+            }
         }
     }
 
@@ -260,12 +345,14 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
         return dataHubEntitiesWithSourceEntityAlternateKeys;
     }
 
-    private async Task<List<MergeEntityResult>> ProcessUpdatedEntities(MergeExistingEntitiesRequest request, List<MergeEntityRequest> mergeRequests, List<ChangeTrackingEntry> convertedSourceEntityChanges, List<AddTrackedEntityChangeSetRequest> changesToAlternateKeys, CancellationToken cancellationToken)
+    private async Task<List<MergeEntityResult>> ProcessUpdatedEntities(MergeExistingEntitiesRequest request, List<MergeEntityRequest> mergeRequests, List<ChangeTrackingEntry> convertedSourceEntityChanges, List<AddTrackedEntityChangeSetRequest> changesToAlternateKeys,
+        Dictionary<ChangeTrackingEntry, AddTrackedEntityChangeSetRequest> sourceChangesByTrackingEntry, CancellationToken cancellationToken)
     {
         var mergeDataHubEntityUpdatesResponse = (await mediator.TrySend(new ProcessUpdatedEntitiesRequest()
         {
             CorrelationId = request.CorrelationId,
             ConvertedSourceEntityChanges = convertedSourceEntityChanges,
+            SourceChangesByTrackingEntry = sourceChangesByTrackingEntry,
             DataHubEntityType = request.DataHubEntityType,
             DataSource = request.DataSource,
             MergeRequests = mergeRequests,
@@ -287,7 +374,8 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
         return changesToAlternateKeys;
     }
 
-    private Task<List<ChangeTrackingEntry>> ConvertSourceEntityChangesToDataHubChangeTrackingEntries(List<AddTrackedEntityChangeSetRequest> sourceSystemEntityUpdates, MergeExistingEntitiesRequest request, CancellationToken cancellationToken)
+    private Task<List<ChangeTrackingEntry>> ConvertSourceEntityChangesToDataHubChangeTrackingEntries(List<AddTrackedEntityChangeSetRequest> sourceSystemEntityUpdates, MergeExistingEntitiesRequest request,
+        Dictionary<ChangeTrackingEntry, AddTrackedEntityChangeSetRequest> sourceChangesByTrackingEntry, CancellationToken cancellationToken)
     {
         var newChangeTrackingEntry = sourceSystemEntityUpdates.Select(s =>
         {
@@ -295,9 +383,10 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
             sanitizedChangeSet.Remove(nameof(DataHubEntity.alternateKeys));
             sanitizedChangeSet = ChangeTrackingHelper.StripBaseProperties(sanitizedChangeSet);
 
-            if (!sanitizedChangeSet.HasValues) return null;
+            // Key-only events take the same staged acceptance path as property events.
+            if (!sanitizedChangeSet.HasValues && !s.ChangeSet.ContainsKey(nameof(DataHubEntity.alternateKeys)) && s.SourceEntityInput == null) return null;
 
-            return new ChangeTrackingEntry()
+            var entry = new ChangeTrackingEntry()
             {
                 id = idService.NewId<ChangeTrackingEntry>(),
                 EntryType = ChangeTrackingEntryTypes.Update,
@@ -307,6 +396,8 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
                 Timestamp = s.TimeStamp,
                 Data = sanitizedChangeSet
             };
+            sourceChangesByTrackingEntry.Add(entry, s);
+            return entry;
         }).Where(w => w != null).ToList();
 
         return Task.FromResult(newChangeTrackingEntry);
@@ -328,7 +419,8 @@ public class MergeExistingEntitiesRequestHandler(IIdService idService, IMediator
     private static (List<MergeEntityResult> results, List<MergeEntityRequest> mergeRequests, List<ResolvedEntityReference> resolvedReferencedEntities) InitializeVars(MergeExistingEntitiesRequest request)
     {
         var results = new List<MergeEntityResult>();
-        var mergeRequests = new List<MergeEntityRequest>(request.MergeRequests);
+        var mergeRequests = MergeRequestOrdering.SortSourceVersions(request.MergeRequests, results);
+        mergeRequests = MergeBatchIntegrity.ExcludeConflictingSources(mergeRequests, request.ResolvedDataHubEntities, results);
         return (results, mergeRequests, request.ResolvedDataHubEntities);
     }
 

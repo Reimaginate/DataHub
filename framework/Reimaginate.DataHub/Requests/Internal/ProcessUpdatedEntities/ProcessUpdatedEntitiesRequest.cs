@@ -17,4 +17,6 @@ public class ProcessUpdatedEntitiesRequest : IRequest<ProcessUpdatedEntitiesResp
     public string CorrelationId { get; set; }
     public EntityConfig EntityConfig { get; set; }
     public bool DoNotTrack { get; set; } = false;
+    // Correlate by object identity, not by entity ID or timestamp: both can repeat.
+    internal Dictionary<ChangeTrackingEntry, AddTrackedEntityChangeSetRequest> SourceChangesByTrackingEntry { get; set; } = new();
 }
