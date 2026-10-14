@@ -88,7 +88,9 @@ public class CalculateSourceEntityUpdatesRequestHandler(IMediator mediator, ITim
                         ChangeSet = entityDiffs ?? new JObject(),
                         TimeStamp = updateTimestamp,
                         SourceEntityInput = request.SourceEntity,
-                        SourceEntityAlternateKeys = (JArray)request.SourceEntity[nameof(DataHubEntity.alternateKeys)]?.DeepClone()
+                        SourceEntityAlternateKeys = request.SourceEntity[nameof(DataHubEntity.alternateKeys)] is JArray alternateKeys
+                            ? (JArray)alternateKeys.DeepClone()
+                            : null
                     };
                     resultingSourceEntityUpdates.Add(addChangeSetRequest);
 
