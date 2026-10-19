@@ -205,8 +205,8 @@ public sealed class EntitiesCommand : DataHubTopLevelCommand
         var where = RequiredArgument("where", "DataHub query filter.");
         var rebaseTo = RequiredArgument("rebaseTo", "Target timestamp, or 'now'.");
         ActiveCommandFactory.Add(command, where, rebaseTo);
-        command.SetAction((parse, _) => RunLegacyAsync(parse, output, () =>
-            new GetEntitiesRebaseCommand(services).HandleCommand(parse.GetValue(where)!, parse.GetValue(rebaseTo)!)));
+        command.SetAction((parse, ct) => RunLegacyAsync(parse, output, () =>
+            new GetEntitiesRebaseCommand(services).HandleCommand(parse.GetValue(where)!, parse.GetValue(rebaseTo)!, ct)));
         return command;
     }
 
@@ -306,8 +306,8 @@ public sealed class SourceEntitiesCommand : DataHubTopLevelCommand
         var dataSource = ActiveCommandFactory.RequiredArgument("dataSource", "Source data source.");
         var rebaseTo = ActiveCommandFactory.RequiredArgument("rebaseTo", "Target timestamp, or 'now'.");
         ActiveCommandFactory.Add(command, where, dataSource, rebaseTo);
-        command.SetAction((parse, _) => ActiveCommandFactory.RunLegacyAsync(parse, output, () =>
-            new GetSourceEntitiesRebaseCommand(serviceProvider).HandleCommand(parse.GetValue(where)!, parse.GetValue(dataSource)!, parse.GetValue(rebaseTo)!)));
+        command.SetAction((parse, ct) => ActiveCommandFactory.RunLegacyAsync(parse, output, () =>
+            new GetSourceEntitiesRebaseCommand(serviceProvider).HandleCommand(parse.GetValue(where)!, parse.GetValue(dataSource)!, parse.GetValue(rebaseTo)!, ct)));
         Add(command);
     }
 }

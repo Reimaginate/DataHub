@@ -10,4 +10,5 @@ public class MaterializeDataHubEntityRequest : IRequest<MaterializeDataHubEntity
     public string EntityId { get; set; }
     public List<ChangeTrackingEntry> TrackingEntries { get; set; }
     public bool SkipSave { get; set; }
+    public bool PreserveNullValues { get; set; }
 }

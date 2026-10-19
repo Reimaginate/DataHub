@@ -23,7 +23,10 @@ public class MaterializeDataHubEntityRequestHandler(IMediator mediator) : IHandl
             EntityId = request.EntityId
         }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
-        trackedEntity = trackedEntity.RemoveNullValues();
+        if (!request.PreserveNullValues)
+        {
+            trackedEntity = trackedEntity.RemoveNullValues();
+        }
 
         if (request.SkipSave) return new MaterializeDataHubEntityResponse()
         {

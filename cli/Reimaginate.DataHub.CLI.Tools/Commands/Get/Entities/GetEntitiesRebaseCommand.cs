@@ -15,11 +15,12 @@ public class GetEntitiesRebaseCommand : SubCommand<GetEntitiesCommand>
         Handler = CommandHandler.Create(HandleCommand);
     }
 
-    public Task<int> HandleCommand(string where, string rebaseTo)
+    public Task<int> HandleCommand(string where, string rebaseTo, CancellationToken cancellationToken = default)
     {
         return CliHelpers.RebaseEntitiesAsync(
             new GetEntitiesWhereRequest { WhereClause = where, PageSize = 5000 },
             rebaseTo,
-            ServiceProvider);
+            ServiceProvider,
+            cancellationToken);
     }
 }

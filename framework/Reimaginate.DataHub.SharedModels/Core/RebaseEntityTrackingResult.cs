@@ -11,5 +11,7 @@ public class RebaseEntityTrackingResult
     public DateTimeOffset? RebasedTo { get; set; }
     public bool Success { get; set; }
     public string FailureReason { get; set; }
+    public string Warning { get; set; }
+    public int ArchivedTrackingEntryCount { get; set; }
     public List<ChangeTrackingEntry> ArchivedTrackingEntries { get; set; }
 }

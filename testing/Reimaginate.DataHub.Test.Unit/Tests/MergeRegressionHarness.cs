@@ -4,6 +4,11 @@ using Newtonsoft.Json.Linq;
 using NSubstitute;
 using OneOf;
 using Reimaginate.DataHub.DataAccess.Commands.CreateCosmosDocuments;
+using Reimaginate.DataHub.DataAccess.Commands.CommitRebaseCheckpoint;
+using Reimaginate.DataHub.DataAccess.Commands.DeleteCosmosDocuments;
+using Reimaginate.DataHub.Requests.Internal.GetMaterializedEntitiesById;
+using Reimaginate.DataHub.Requests.Internal.ProcessRebaseSourceEntities;
+using Reimaginate.DataHub.Requests.Internal.ProcessRebaseDataHubEntities;
 using Reimaginate.DataHub.DataAccess.Commands.UpsertCosmosDocuments;
 using Reimaginate.DataHub.DataAccess.Commands.UpsertDataHubEntities;
 using Reimaginate.DataHub.DataAccess.Queries.GetTrackingEntries;
@@ -63,7 +68,7 @@ internal sealed class MergeRegressionHarness : IDisposable
     private readonly IMediator mediator;
     private readonly IIdService ids = Substitute.For<IIdService>();
     private readonly ITimeService time = Substitute.For<ITimeService>();
-    private readonly IProcessingLockService locks = Substitute.For<IProcessingLockService>();
+    private readonly IProcessingLockService locks;
     private readonly AsyncLocal<WriteBatch?> currentBatch = new();
     private TaskCompletionSource changed = NewSignal();
     private int nextId;
@@ -93,13 +98,16 @@ internal sealed class MergeRegressionHarness : IDisposable
         lock (gate) return allWrites.Count(w => w.EntityId == entityId);
     }
 
-    public MergeRegressionHarness(bool newestWriteFirst)
+    public Func<IRequest, Task>? BeforeRequest { get; set; }
+
+    public MergeRegressionHarness(bool newestWriteFirst, IProcessingLockService? processingLocks = null)
     {
         this.newestWriteFirst = newestWriteFirst;
+        locks = processingLocks ?? Substitute.For<IProcessingLockService>();
         ids.NewId<DataHubEntity>().Returns(_ => $"new-entity-{Interlocked.Increment(ref nextId)}");
         ids.NewId<ChangeTrackingEntry>().Returns(_ => $"change-{Interlocked.Increment(ref nextId)}");
         time.Now().Returns(ProcessingTime);
-        locks.WaitForLocksAsync(Arg.Any<List<string>>(), Arg.Any<string>(), Arg.Any<CancellationToken>(), Arg.Any<TimeSpan?>(), Arg.Any<TimeSpan?>())
+        if (processingLocks == null) locks.WaitForLocksAsync(Arg.Any<List<string>>(), Arg.Any<string>(), Arg.Any<CancellationToken>(), Arg.Any<TimeSpan?>(), Arg.Any<TimeSpan?>())
             .Returns(Task.FromResult(new Reimaginate.ProcessingLockService.Response<List<ProcessingLock>>(true, [], null)));
         var container = Substitute.For<Container>();
         container.UpsertItemAsync(Arg.Any<JObject>(), Arg.Any<PartitionKey?>(), Arg.Any<ItemRequestOptions>(), Arg.Any<CancellationToken>())
@@ -142,6 +150,7 @@ internal sealed class MergeRegressionHarness : IDisposable
 
     private static ChangeTrackingEntry InitialEntry(string source, string type, string id, JObject data) => new()
     {
+        id = $"initial/{source}/{type}/{id}",
         EntityId = id, EntityType = type, DataSource = source, EntryType = ChangeTrackingEntryTypes.Init,
         Timestamp = InitialTime, Data = ChangeTrackingHelper.StripBaseProperties((JObject)data.DeepClone())
     };
@@ -169,6 +178,19 @@ internal sealed class MergeRegressionHarness : IDisposable
     public void ForgetDestinationHistory(string entityId)
     {
         lock (gate) history.RemoveAll(e => e.DataSource == DataSources.DataHub && e.EntityId == entityId);
+    }
+
+    public async Task<List<RebaseEntityTrackingResult>> RebaseAsync(bool source, string? sourceEntityType = null, string? sourceDataSource = null)
+    {
+        if (source)
+            return (await new ProcessRebaseSourceEntitiesRequestHandler(mediator, locks).HandleAsync(new()
+            {
+                DataSource = sourceDataSource ?? Source, EntityType = sourceEntityType ?? SourceType, EntityIds = ["booking-1"]
+            }, Token)).Results;
+        return (await new ProcessRebaseDataHubEntitiesRequestHandler(mediator, locks).HandleAsync(new()
+        {
+            EntityType = "Booking", EntityIds = ["entity-1"]
+        }, Token)).Results;
     }
 
     public async Task<MergeEntitiesResponse> MergePublicAsync(bool tracked, List<MergeEntityRequest> requests)
@@ -249,6 +271,7 @@ internal sealed class MergeRegressionHarness : IDisposable
 
     private async Task<object> RespondAsync(IRequest request)
     {
+        if (BeforeRequest != null) await BeforeRequest(request);
         switch (request)
         {
             case ResolveEntityReferencesRequest resolve:
@@ -259,8 +282,33 @@ internal sealed class MergeRegressionHarness : IDisposable
                         ? get.EntityIds.Distinct().Where(Stored.ContainsKey).Select(id => Stored[id])
                         : Stored.Values.Where(e => get.EntityIds.Contains(e.Value<string>("id")!)))
                         .Select(e => (JObject)e.DeepClone()).ToList() };
+            case GetMaterializedEntitiesByIdRequest get:
+                lock (gate) return new GetMaterializedEntitiesByIdResponse
+                {
+                    Results = get.EntityIds.Where(Stored.ContainsKey).Select(id => (JObject)Stored[id].DeepClone()).ToList()
+                };
+            case CommitRebaseCheckpointCommand checkpoint:
+                lock (gate)
+                {
+                    checkpoint.EnsureLease?.Invoke();
+                    var ids = checkpoint.EntriesToDelete.Select(entry => entry.id).ToHashSet();
+                    if (checkpoint.EntriesToDelete.Any(entry => !history.Any(stored => stored.id == entry.id)))
+                        return new CommitRebaseCheckpointResponse { FailureReason = "Stale checkpoint" };
+                    history.RemoveAll(entry => ids.Contains(entry.id));
+                    if (checkpoint.Baseline != null) history.Add(CloneEntry(checkpoint.Baseline));
+                    return new CommitRebaseCheckpointResponse { Success = true };
+                }
+            case DeleteCosmosDocumentsCommand<ChangeTrackingEntry> delete:
+                lock (gate)
+                {
+                    var idsToDelete = delete.Documents.Select(entry => entry.id).ToHashSet();
+                    history.RemoveAll(entry => idsToDelete.Contains(entry.id));
+                    return new DeleteCosmosDocumentsResponse<ChangeTrackingEntry> { Successes = delete.Documents, Failures = [] };
+                }
             case GetTrackingEntriesQuery query:
                 lock (gate) return new PagedResults<ChangeTrackingEntry> { Results = ReadHistory(query.DataSource, query.EntityType, query.EntityIds) };
+            case Reimaginate.DataHub.DataAccess.Queries.GetSourceRebaseIdentities.GetSourceRebaseIdentitiesQuery query:
+                lock (gate) return SourceRebaseIdentityTests.IdentityPairs(history, query);
             case GetAllTrackingEntriesForEntitiesRequest query:
                 lock (gate) return new GetAllTrackingEntriesForEntitiesResponse { TrackingEntries = ReadHistory(query.DataSource, query.EntityType, query.EntityIds) };
             case CheckPreMergeRulesRequest check:

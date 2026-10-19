@@ -2,8 +2,10 @@ using System.CommandLine.NamingConventionBinder;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Reimaginate.DataHub.CLI.Tools.PluginBase;
+using Reimaginate.DataHub.CLI.Tools.Helpers;
 using Reimaginate.CLI.Base.Attributes;
 using Reimaginate.DataHub.CLI.Tools.Shared.API;
+using Reimaginate.DataHub.CLI.Tools.Shared.Runtime;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Requests.CLI;
 
@@ -21,15 +23,6 @@ public class RebaseCommand : TopLevelCommand
         _serviceProvider = serviceProvider;
         Handler = CommandHandler.Create(HandleCommand);
     }
-
-    private readonly string _defaultProperties = string.Join(",", new List<string>()
-    {
-        nameof(RebaseEntityTrackingResult.DataSource),
-        nameof(RebaseEntityTrackingResult.EntityType),
-        nameof(RebaseEntityTrackingResult.EntityId),
-        nameof(RebaseEntityTrackingResult.Success),
-        nameof(RebaseEntityTrackingResult.FailureReason),
-    });
 
     public async Task<int> HandleCommand(string dataSource, string entityType, string[] entityIds, CancellationToken cancellationToken)
     {
@@ -56,77 +49,105 @@ public class RebaseCommand : TopLevelCommand
         var adminApi = _serviceProvider.GetRequiredService<ICLIApi>();
 
         var cancelled = false;
-        var failures = new List<object>();
+        var failures = new List<RebaseEntityTrackingResult>();
+        var succeeded = 0;
+        long archivedCount = 0;
 
         var idsToProcess = new List<string>(entityIds);
 
-        while (idsToProcess.Any())
+        try
         {
-            if (cancelled) break;
-
-            var batch = idsToProcess.Take(5000).ToList();
-
-            switch (dataSource.ToLower())
+            while (idsToProcess.Any())
             {
-                case "datahub":
-                    var rebaseDataHubEntitiesRequest = new SerializedRequest()
-                    {
-                        RequestType = nameof(RebaseDataHubEntitiesRequest),
-                        Data = JsonConvert.SerializeObject(new RebaseDataHubEntitiesRequest()
-                        {
-                            EntityType = entityType,
-                            EntityIds = batch
-                        })
-                    };
-
-                    var rebaseDataHubEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(rebaseDataHubEntitiesRequest, cancellationToken);
-                    failures.AddRange(rebaseDataHubEntitiesResponse.Results.Where(w => !w.Success));
-                    break;
-
-                default:
-                    var rebaseSourceEntitiesRequest = new SerializedRequest()
-                    {
-                        RequestType = nameof(RebaseSourceEntitiesRequest),
-                        Data = JsonConvert.SerializeObject(new RebaseSourceEntitiesRequest()
-                        {
-                            DataSource = dataSource,
-                            EntityType = entityType,
-                            EntityIds = batch
-                        })
-                    };
-
-                    var rebaseSourceEntitiesResponse = await adminApi.PostAdminMessage<RebaseSourceEntitiesResponse>(rebaseSourceEntitiesRequest, cancellationToken);
-                    failures.AddRange(rebaseSourceEntitiesResponse.Results.Where(w => !w.Success));
-                    break;
-            }
-
-            idsToProcess.RemoveRange(0, batch.Count);
-
-            if (!Console.IsOutputRedirected)
-            {
-                Console.WriteLine($@"{idsToProcess.Count} Remaining");
-            }
-
-            if (!Console.IsInputRedirected)
-            {
-                while (Console.KeyAvailable)
+                if (cancelled || cancellationToken.IsCancellationRequested)
                 {
-                    var kp = Console.ReadKey();
-                    if (kp.Key == ConsoleKey.Escape)
-                    {
-                        cancelled = true;
+                    cancelled = true;
+                    break;
+                }
+
+                var batch = idsToProcess.Take(5000).ToList();
+
+                switch (dataSource.ToLower())
+                {
+                    case "datahub":
+                        var rebaseDataHubEntitiesRequest = new SerializedRequest()
+                        {
+                            RequestType = nameof(RebaseDataHubEntitiesRequest),
+                            Data = JsonConvert.SerializeObject(new RebaseDataHubEntitiesRequest()
+                            {
+                                IncludeArchivedTrackingEntries = false,
+                                EntityType = entityType,
+                                EntityIds = batch
+                            })
+                        };
+
+                        var rebaseDataHubEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(rebaseDataHubEntitiesRequest, cancellationToken);
+                        CliHelpers.ShowRebaseWarnings(rebaseDataHubEntitiesResponse.Results);
+                        failures.AddRange(rebaseDataHubEntitiesResponse.Results.Where(w => !w.Success));
+                        succeeded += rebaseDataHubEntitiesResponse.Results.Count(w => w.Success);
+                        archivedCount += rebaseDataHubEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
                         break;
+
+                    default:
+                        var rebaseSourceEntitiesRequest = new SerializedRequest()
+                        {
+                            RequestType = nameof(RebaseSourceEntitiesRequest),
+                            Data = JsonConvert.SerializeObject(new RebaseSourceEntitiesRequest()
+                            {
+                                IncludeArchivedTrackingEntries = false,
+                                DataSource = dataSource,
+                                EntityType = entityType,
+                                EntityIds = batch
+                            })
+                        };
+
+                        var rebaseSourceEntitiesResponse = await adminApi.PostAdminMessage<RebaseSourceEntitiesResponse>(rebaseSourceEntitiesRequest, cancellationToken);
+                        CliHelpers.ShowRebaseWarnings(rebaseSourceEntitiesResponse.Results);
+                        failures.AddRange(rebaseSourceEntitiesResponse.Results.Where(w => !w.Success));
+                        succeeded += rebaseSourceEntitiesResponse.Results.Count(w => w.Success);
+                        archivedCount += rebaseSourceEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
+                        break;
+                }
+
+                idsToProcess.RemoveRange(0, batch.Count);
+
+                if (!Console.IsOutputRedirected)
+                {
+                    Console.WriteLine($@"{idsToProcess.Count} Remaining");
+                }
+
+                if (idsToProcess.Count > 0 && !Console.IsInputRedirected)
+                {
+                    while (Console.KeyAvailable)
+                    {
+                        var kp = Console.ReadKey();
+                        if (kp.Key == ConsoleKey.Escape)
+                        {
+                            cancelled = true;
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        if (failures.Any())
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return 0;
+            cancelled = true;
         }
 
-        return 1;
+        Console.Error.WriteLine($"Rebase finished: {succeeded} succeeded, {failures.Count} failed, {idsToProcess.Count} unconfirmed. Archived {archivedCount} tracking entries.");
+        foreach (var failure in failures)
+        {
+            Console.Error.WriteLine($"{failure.DataSource}/{failure.EntityType}/{failure.EntityId}: {failure.FailureReason ?? "Rebase failed."} Confirmed cutoff: {failure.RebasedTo?.ToString("O") ?? "none"}.");
+        }
+
+        if (cancelled)
+        {
+            Console.Error.WriteLine("Rebase cancelled.");
+            return CliExitCodes.Cancelled;
+        }
+
+        return failures.Count > 0 ? CliExitCodes.Failure : CliExitCodes.Success;
     }
 }
-

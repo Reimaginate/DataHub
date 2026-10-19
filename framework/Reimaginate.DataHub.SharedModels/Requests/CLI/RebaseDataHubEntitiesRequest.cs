@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Reimaginate.DataHub.SharedModels.Core;
 
@@ -14,4 +14,5 @@ public class RebaseDataHubEntitiesRequest : DataHubCLIRequest<RebaseDataHubEntit
     public string EntityType { get; set; }
     public List<string> EntityIds { get; set; }
     public DateTimeOffset? RebaseTo { get; set; }
+    public bool IncludeArchivedTrackingEntries { get; set; } = true;
 }

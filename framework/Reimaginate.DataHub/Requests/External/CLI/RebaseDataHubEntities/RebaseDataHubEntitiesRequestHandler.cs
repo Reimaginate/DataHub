@@ -19,6 +19,7 @@ public class RebaseDataHubEntitiesRequestHandler(IMediator mediator) : IHandler<
         {
             EntityType = request.EntityType,
             EntityIds = request.EntityIds,
+            IncludeArchivedTrackingEntries = request.IncludeArchivedTrackingEntries,
             RebaseTo = request.RebaseTo
         }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
@@ -27,10 +28,12 @@ public class RebaseDataHubEntitiesRequestHandler(IMediator mediator) : IHandler<
             DataSource = DataSources.DataHub,
             EntityType = result.EntityType,
             EntityId = result.EntityId,
-            RebasedTo = request.RebaseTo,
+            RebasedTo = result.RebasedTo,
             Success = result.Success,
             FailureReason = result.FailureReason,
-            ArchivedTrackingEntries = result.ArchivedTrackingEntries
+            Warning = result.Warning,
+            ArchivedTrackingEntryCount = result.ArchivedTrackingEntryCount,
+            ArchivedTrackingEntries = request.IncludeArchivedTrackingEntries ? result.ArchivedTrackingEntries : new List<ChangeTrackingEntry>()
         }));
 
         return new RebaseDataHubEntitiesResponse()

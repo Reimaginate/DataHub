@@ -20,6 +20,14 @@ rootCommand.AddDataHubTools(serviceProvider);
 The package uses Microsoft Entra delegated-user authentication. Profiles store
 target metadata; access tokens are not persisted in profile files.
 
+## Tracking rebases
+
+Rebase commands request compact responses, display confirmed archived-entry counts
+and print stored-entity recovery warnings. Failures and cancellations retain their
+command outcomes. When a command uses `now`, it captures one cutoff for all entity
+types, batches and query pages. Upgrade the runtime as well as the CLI to receive
+the transactional rebase and lock-coordination changes.
+
 ## Support
 
 Paid support, configuration assistance and defect triage are available through

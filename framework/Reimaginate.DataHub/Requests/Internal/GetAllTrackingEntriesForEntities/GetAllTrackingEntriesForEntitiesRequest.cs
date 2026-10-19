@@ -8,4 +8,6 @@ public class GetAllTrackingEntriesForEntitiesRequest : IRequest<GetAllTrackingEn
     public string DataSource { get; set; }
     public string EntityType { get; set; }
     public List<string> EntityIds { get; set; }
+    // Rebases opt in; preserve the existing read behavior for merge and other callers.
+    internal bool ObserveCancellation { get; set; }
 }

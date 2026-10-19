@@ -8,6 +8,7 @@ using Reimaginate.DataHub.CLI.Tools.Commands.Merge;
 using Reimaginate.DataHub.CLI.Tools.Commands.Sync;
 using Reimaginate.DataHub.CLI.Tools.Shared.API;
 using Reimaginate.DataHub.CLI.Tools.Shared.Helpers;
+using Reimaginate.DataHub.CLI.Tools.Shared.Runtime;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Core.Models.DTO;
 using Reimaginate.DataHub.SharedModels.Core.Models.Failures;
@@ -74,14 +75,27 @@ public static class CliHelpers
             "failed entity delete result(s)");
     }
 
+    internal static void ShowRebaseWarnings(IEnumerable<RebaseEntityTrackingResult> results)
+    {
+        foreach (var result in results.Where(result => !string.IsNullOrWhiteSpace(result.Warning)))
+            Console.Error.WriteLine($"WARNING: {result.DataSource}/{result.EntityType}/{result.EntityId}: {result.Warning}");
+    }
+
     private static void ShowRebaseFailures(List<RebaseEntityTrackingResult> failures, string filePrefix)
     {
+        foreach (var failure in failures)
+        {
+            Console.Error.WriteLine($"{failure.DataSource}/{failure.EntityType}/{failure.EntityId}: {failure.FailureReason ?? "Rebase failed."} Confirmed cutoff: {failure.RebasedTo?.ToString("O") ?? "none"}.");
+        }
+
         BulkOperationDetailsPrompt.Show(
             failures,
             [
                 nameof(RebaseEntityTrackingResult.DataSource),
                 nameof(RebaseEntityTrackingResult.EntityType),
                 nameof(RebaseEntityTrackingResult.EntityId),
+                nameof(RebaseEntityTrackingResult.RebasedTo),
+                nameof(RebaseEntityTrackingResult.ArchivedTrackingEntryCount),
                 nameof(RebaseEntityTrackingResult.FailureReason)
             ],
             filePrefix,
@@ -1030,16 +1044,26 @@ public static class CliHelpers
         return failures.Any() ? 0 : 1;
     }
 
-    public static async Task<int> RebaseEntitiesAsync(Func<Task<List<JObject>>> dataHubEntities, string rebaseTo, IServiceProvider serviceProvider)
+    private static DateTimeOffset ResolveRebaseCutoff(string rebaseTo, IServiceProvider serviceProvider)
     {
+        return string.Equals(rebaseTo, "now", StringComparison.OrdinalIgnoreCase)
+            ? (serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetLocalNow()
+            : DateTimeOffset.Parse(rebaseTo);
+    }
+
+    public static async Task<int> RebaseEntitiesAsync(Func<Task<List<JObject>>> dataHubEntities, string rebaseTo, IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         AnsiConsole.WriteLine();
         AnsiConsole.Foreground = Color.Red;
 
         if (!AnsiConsole.Confirm("[bold red]WARNING: THIS IS A HIGH RISK OPERATION THAT MAY RESULT IN LOSS OF DATA. ARE YOU SURE YOU WANT TO CONTINUE[/]"))
         {
             AnsiConsole.WriteLine();
-            return 1;
+            return CliExitCodes.Cancelled;
         }
+
+        var resolvedRebaseTo = ResolveRebaseCutoff(rebaseTo, serviceProvider);
 
         AnsiConsole.ResetColors();
         AnsiConsole.WriteLine();
@@ -1053,6 +1077,8 @@ public static class CliHelpers
 
         var cancelled = false;
         var failures = new List<RebaseEntityTrackingResult>();
+        var succeeded = 0;
+        long archivedCount = 0;
         await CliProgressHelper.RunAsync(async ctx =>
             {
                 var task = ctx.AddTask($"Patching {totalCount} records", Math.Max(totalCount, 1));
@@ -1061,12 +1087,14 @@ public static class CliHelpers
                 foreach (var entityTypeGroup in groupedByEntityType)
                 {
                     if (cancelled) break;
+                    cancellationToken.ThrowIfCancellationRequested();
 
                     var entityIds = entityTypeGroup.Select(s => s.Value<string>(nameof(DataHubEntity.id))).ToList();
 
                     while (entityIds.Any())
                     {
                         if (cancelled) break;
+                        cancellationToken.ThrowIfCancellationRequested();
 
                         var batch = entityIds.Take(5000).ToList();
 
@@ -1075,20 +1103,24 @@ public static class CliHelpers
                             RequestType = nameof(RebaseDataHubEntitiesRequest),
                             Data = JsonConvert.SerializeObject(new RebaseDataHubEntitiesRequest()
                             {
+                                IncludeArchivedTrackingEntries = false,
                                 EntityType = entityTypeGroup.Key,
                                 EntityIds = batch,
-                                RebaseTo = rebaseTo?.ToLower() == "now" ? DateTimeOffset.Now : DateTimeOffset.Parse(rebaseTo!)
+                                RebaseTo = resolvedRebaseTo
                             })
                         };
                         var adminApi = serviceProvider.GetRequiredService<ICLIApi>();
-                        var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(req);
+                        var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(req, cancellationToken);
+                        ShowRebaseWarnings(rebaseEntitiesResponse.Results);
                         failures.AddRange(rebaseEntitiesResponse.Results.Where(w => !w.Success));
+                        succeeded += rebaseEntitiesResponse.Results.Count(w => w.Success);
+                        archivedCount += rebaseEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
 
                         task.Increment(batch.Count);
 
                         entityIds.RemoveRange(0, batch.Count);
 
-                        while (Console.KeyAvailable)
+                        while (!Console.IsInputRedirected && Console.KeyAvailable)
                         {
                             var kp = Console.ReadKey();
                             if (kp.Key == ConsoleKey.Escape)
@@ -1104,22 +1136,26 @@ public static class CliHelpers
                 task.StopTask();
             });
 
-        AnsiConsole.WriteLine($"Rebased {Math.Max(totalCount - failures.Count, 0)} of {totalCount} DataHub entities. Failed {failures.Count}.");
+        AnsiConsole.WriteLine($"Rebased {succeeded} of {totalCount} DataHub entities. Failed {failures.Count}. Archived {archivedCount} tracking entries.");
         ShowRebaseFailures(failures, "entities-rebase-errors");
-        return 1;
+        return cancelled ? CliExitCodes.Cancelled
+            : failures.Count > 0 ? CliExitCodes.LegacyRuntimeFailure : CliExitCodes.LegacyRuntimeSuccess;
 
     }
 
-    public static async Task<int> RebaseEntitiesAsync(GetEntitiesWhereRequest whereReq, string rebaseTo, IServiceProvider serviceProvider)
+    public static async Task<int> RebaseEntitiesAsync(GetEntitiesWhereRequest whereReq, string rebaseTo, IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         AnsiConsole.WriteLine();
         AnsiConsole.Foreground = Color.Red;
 
         if (!AnsiConsole.Confirm("[bold red]WARNING: THIS IS A HIGH RISK OPERATION THAT MAY RESULT IN LOSS OF DATA. ARE YOU SURE YOU WANT TO CONTINUE[/]"))
         {
             AnsiConsole.WriteLine();
-            return 1;
+            return CliExitCodes.Cancelled;
         }
+
+        var resolvedRebaseTo = ResolveRebaseCutoff(rebaseTo, serviceProvider);
 
         AnsiConsole.ResetColors();
         AnsiConsole.WriteLine();
@@ -1128,7 +1164,7 @@ public static class CliHelpers
 
         whereReq.Select = "x.entityType,x.id";
         whereReq.GetTotalResultCount = true;
-        var getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq);
+        var getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq, cancellationToken);
         var entities = getEntitiesResponse.Results;
         var totalCount = getEntitiesResponse.ResultCount;
 
@@ -1136,6 +1172,8 @@ public static class CliHelpers
 
         var cancelled = false;
         var failures = new List<RebaseEntityTrackingResult>();
+        var succeeded = 0;
+        long archivedCount = 0;
         await CliProgressHelper.RunAsync(async ctx =>
             {
                 var task = ctx.AddTask($"Rebasing {totalCount} records", Math.Max(totalCount, 1));
@@ -1144,12 +1182,14 @@ public static class CliHelpers
                 foreach (var entityTypeGroup in groupedByEntityType)
                 {
                     if (cancelled) break;
+                    cancellationToken.ThrowIfCancellationRequested();
 
                     var entityIds = entityTypeGroup.Select(s => s.Value<string>(nameof(DataHubEntity.id))).ToList();
 
                     while (entityIds.Any())
                     {
                         if (cancelled) break;
+                        cancellationToken.ThrowIfCancellationRequested();
 
                         var batch = entityIds.Take(5000).ToList();
 
@@ -1158,20 +1198,24 @@ public static class CliHelpers
                             RequestType = nameof(RebaseDataHubEntitiesRequest),
                             Data = JsonConvert.SerializeObject(new RebaseDataHubEntitiesRequest()
                             {
+                                IncludeArchivedTrackingEntries = false,
                                 EntityType = entityTypeGroup.Key,
                                 EntityIds = batch,
-                                RebaseTo = rebaseTo?.ToLower() == "now" ? DateTimeOffset.Now : DateTimeOffset.Parse(rebaseTo!)
+                                RebaseTo = resolvedRebaseTo
                             })
                         };
                         var adminApi = serviceProvider.GetRequiredService<ICLIApi>();
-                        var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(req);
+                        var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(req, cancellationToken);
+                        ShowRebaseWarnings(rebaseEntitiesResponse.Results);
                         failures.AddRange(rebaseEntitiesResponse.Results.Where(w => !w.Success));
+                        succeeded += rebaseEntitiesResponse.Results.Count(w => w.Success);
+                        archivedCount += rebaseEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
 
                         task.Increment(batch.Count);
 
                         entityIds.RemoveRange(0, batch.Count);
 
-                        while (Console.KeyAvailable)
+                        while (!Console.IsInputRedirected && Console.KeyAvailable)
                         {
                             var kp = Console.ReadKey();
                             if (kp.Key == ConsoleKey.Escape)
@@ -1189,7 +1233,7 @@ public static class CliHelpers
                     whereReq.ContinuationToken = getEntitiesResponse.ContinuationToken;
                     whereReq.GetTotalResultCount = false;
 
-                    getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq);
+                    getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq, cancellationToken);
                     entities = getEntitiesResponse.Results;
 
                     groupedByEntityType = entities.GroupBy(g => g.Value<string>(nameof(DataHubEntity.entityType)));
@@ -1197,12 +1241,14 @@ public static class CliHelpers
                     foreach (var entityTypeGroup in groupedByEntityType)
                     {
                         if (cancelled) break;
+                        cancellationToken.ThrowIfCancellationRequested();
 
                         var entityIds = entityTypeGroup.Select(s => s.Value<string>(nameof(DataHubEntity.id))).ToList();
 
                         while (entityIds.Any())
                         {
                             if (cancelled) break;
+                            cancellationToken.ThrowIfCancellationRequested();
 
                             var batch = entityIds.Take(5000).ToList();
 
@@ -1211,20 +1257,24 @@ public static class CliHelpers
                                 RequestType = nameof(RebaseDataHubEntitiesRequest),
                                 Data = JsonConvert.SerializeObject(new RebaseDataHubEntitiesRequest()
                                 {
+                                    IncludeArchivedTrackingEntries = false,
                                     EntityType = entityTypeGroup.Key,
                                     EntityIds = batch,
-                                    RebaseTo = rebaseTo?.ToLower() == "now" ? DateTimeOffset.Now : DateTimeOffset.Parse(rebaseTo!)
+                                    RebaseTo = resolvedRebaseTo
                                 })
                             };
                             var adminApi = serviceProvider.GetRequiredService<ICLIApi>();
-                            var patchEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(req);
+                            var patchEntitiesResponse = await adminApi.PostAdminMessage<RebaseDataHubEntitiesResponse>(req, cancellationToken);
+                            ShowRebaseWarnings(patchEntitiesResponse.Results);
                             failures.AddRange(patchEntitiesResponse.Results.Where(w => !w.Success));
+                            succeeded += patchEntitiesResponse.Results.Count(w => w.Success);
+                            archivedCount += patchEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
 
                             task.Increment(batch.Count);
 
                             entityIds.RemoveRange(0, batch.Count);
 
-                            while (Console.KeyAvailable)
+                            while (!Console.IsInputRedirected && Console.KeyAvailable)
                             {
                                 var kp = Console.ReadKey();
                                 if (kp.Key == ConsoleKey.Escape)
@@ -1241,21 +1291,25 @@ public static class CliHelpers
                 task.StopTask();
             });
 
-        AnsiConsole.WriteLine($"Rebased {Math.Max(totalCount - failures.Count, 0)} of {totalCount} DataHub entities. Failed {failures.Count}.");
+        AnsiConsole.WriteLine($"Rebased {succeeded} of {totalCount} DataHub entities. Failed {failures.Count}. Archived {archivedCount} tracking entries.");
         ShowRebaseFailures(failures, "entities-rebase-errors");
-        return 1;
+        return cancelled ? CliExitCodes.Cancelled
+            : failures.Count > 0 ? CliExitCodes.LegacyRuntimeFailure : CliExitCodes.LegacyRuntimeSuccess;
     }
     
-    public static async Task<int> RebaseSourceEntitiesAsync(GetEntitiesWhereRequest whereReq, string dataSource, string rebaseTo, IServiceProvider serviceProvider)
+    public static async Task<int> RebaseSourceEntitiesAsync(GetEntitiesWhereRequest whereReq, string dataSource, string rebaseTo, IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         AnsiConsole.WriteLine();
         AnsiConsole.Foreground = Color.Red;
 
         if (!AnsiConsole.Confirm("[bold red]WARNING: THIS IS A HIGH RISK OPERATION THAT MAY RESULT IN LOSS OF DATA. ARE YOU SURE YOU WANT TO CONTINUE[/]"))
         {
             AnsiConsole.WriteLine();
-            return 1;
+            return CliExitCodes.Cancelled;
         }
+
+        var resolvedRebaseTo = ResolveRebaseCutoff(rebaseTo, serviceProvider);
 
         AnsiConsole.ResetColors();
         AnsiConsole.WriteLine();
@@ -1264,7 +1318,7 @@ public static class CliHelpers
 
         whereReq.Select = "x.entityType,x.id,x.alternateKeys";
         whereReq.GetTotalResultCount = true;
-        var getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq);
+        var getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq, cancellationToken);
         var dataHubEntities = getEntitiesResponse.Results;
         var totalCount = getEntitiesResponse.ResultCount;
 
@@ -1272,6 +1326,8 @@ public static class CliHelpers
 
         var cancelled = false;
         var failures = new List<RebaseEntityTrackingResult>();
+        var succeeded = 0;
+        long archivedCount = 0;
         await CliProgressHelper.RunAsync(async ctx =>
             {
                 var task = ctx.AddTask($"Rebasing {totalCount} records", Math.Max(totalCount, 1));
@@ -1280,27 +1336,29 @@ public static class CliHelpers
                 foreach (var entityTypeGroup in groupedByEntityType)
                 {
                     if (cancelled) break;
+                    cancellationToken.ThrowIfCancellationRequested();
 
                     var entities = entityTypeGroup.ToList();
                     var alternateKeys = entities.Where(w=>w.ContainsKey(nameof(DataHubEntity.alternateKeys))).Select(s => s.Value<JArray>(nameof(DataHubEntity.alternateKeys))).SelectMany(s=>s?.Children() ?? []).ToList();
-                    var sourceSystemAltKeys = alternateKeys.Where(w => (w.Value<string>(nameof(AlternateKey.Key)) ?? string.Empty).ToLower().StartsWith($"{dataSource.ToLower()}."));
+                    var sourceSystemAltKeys = alternateKeys.Where(w => (w.Value<string>(nameof(AlternateKey.Key)) ?? string.Empty).StartsWith($"{dataSource}.", StringComparison.OrdinalIgnoreCase));
                    
                     var srcEntityTypeGroups = sourceSystemAltKeys.GroupBy(g =>
                     {
-                        var parts = (g.Value<string>(nameof(AlternateKey.Key)) ?? string.Empty).Split('.');
-                        var entityType = parts[1];
+                        var entityType = g.Value<string>(nameof(AlternateKey.Key))![(dataSource.Length + 1)..];
                         return new { EntityType = entityType };
                     });
 
                     foreach (var srcEntityTypeGroup in srcEntityTypeGroups)
                     {
                         if (cancelled) break;
+                        cancellationToken.ThrowIfCancellationRequested();
 
                         var entityIds = srcEntityTypeGroup.Select(s => s.Value<string>(nameof(AlternateKey.Value))).Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id!).ToList();
 
                         while (entityIds.Any())
                         {
                             if (cancelled) break;
+                            cancellationToken.ThrowIfCancellationRequested();
 
                             var batch = entityIds.Take(5000).ToList();
 
@@ -1309,21 +1367,25 @@ public static class CliHelpers
                                 RequestType = nameof(RebaseSourceEntitiesRequest),
                                 Data = JsonConvert.SerializeObject(new RebaseSourceEntitiesRequest()
                                 {
+                                    IncludeArchivedTrackingEntries = false,
                                     DataSource = dataSource,
                                     EntityType = srcEntityTypeGroup.Key.EntityType,
                                     EntityIds = batch,
-                                    RebaseTo = rebaseTo?.ToLower() == "now" ? DateTimeOffset.Now : DateTimeOffset.Parse(rebaseTo!)
+                                    RebaseTo = resolvedRebaseTo
                                 })
                             };
                             var adminApi = serviceProvider.GetRequiredService<ICLIApi>();
-                            var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseSourceEntitiesResponse>(req);
+                            var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseSourceEntitiesResponse>(req, cancellationToken);
+                            ShowRebaseWarnings(rebaseEntitiesResponse.Results);
                             failures.AddRange(rebaseEntitiesResponse.Results.Where(w => !w.Success));
+                            succeeded += rebaseEntitiesResponse.Results.Count(w => w.Success);
+                            archivedCount += rebaseEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
 
                             task.Increment(batch.Count);
 
                             entityIds.RemoveRange(0, batch.Count);
 
-                            while (Console.KeyAvailable)
+                            while (!Console.IsInputRedirected && Console.KeyAvailable)
                             {
                                 var kp = Console.ReadKey();
                                 if (kp.Key == ConsoleKey.Escape)
@@ -1342,7 +1404,7 @@ public static class CliHelpers
                     whereReq.ContinuationToken = getEntitiesResponse.ContinuationToken;
                     whereReq.GetTotalResultCount = false;
 
-                    getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq);
+                    getEntitiesResponse = await RetrievePagedResultsAsync<GetEntitiesWhereRequest, GetEntitiesResponse>(serviceProvider, whereReq, cancellationToken);
                     dataHubEntities = getEntitiesResponse.Results;
 
                     groupedByEntityType = dataHubEntities.GroupBy(g => g.Value<string>(nameof(DataHubEntity.entityType)));
@@ -1350,27 +1412,29 @@ public static class CliHelpers
                     foreach (var entityTypeGroup in groupedByEntityType)
                     {
                         if (cancelled) break;
+                        cancellationToken.ThrowIfCancellationRequested();
 
                         var entities = entityTypeGroup.ToList();
                         var alternateKeys = entities.Where(w => w.ContainsKey(nameof(DataHubEntity.alternateKeys))).Select(s => s.Value<JArray>(nameof(DataHubEntity.alternateKeys))).SelectMany(s => s?.Children() ?? []).ToList();
-                        var sourceSystemAltKeys = alternateKeys.Where(w => (w.Value<string>(nameof(AlternateKey.Key)) ?? string.Empty).ToLower().StartsWith($"{dataSource.ToLower()}."));
+                        var sourceSystemAltKeys = alternateKeys.Where(w => (w.Value<string>(nameof(AlternateKey.Key)) ?? string.Empty).StartsWith($"{dataSource}.", StringComparison.OrdinalIgnoreCase));
 
                         var srcEntityTypeGroups = sourceSystemAltKeys.GroupBy(g =>
                         {
-                            var parts = (g.Value<string>(nameof(AlternateKey.Key)) ?? string.Empty).Split('.');
-                            var entityType = parts[1];
+                            var entityType = g.Value<string>(nameof(AlternateKey.Key))![(dataSource.Length + 1)..];
                             return new { EntityType = entityType };
                         });
 
                         foreach (var srcEntityTypeGroup in srcEntityTypeGroups)
                         {
                             if (cancelled) break;
+                            cancellationToken.ThrowIfCancellationRequested();
 
                             var entityIds = srcEntityTypeGroup.Select(s => s.Value<string>(nameof(AlternateKey.Value))).Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id!).ToList();
 
                             while (entityIds.Any())
                             {
                                 if (cancelled) break;
+                                cancellationToken.ThrowIfCancellationRequested();
 
                                 var batch = entityIds.Take(5000).ToList();
 
@@ -1379,21 +1443,25 @@ public static class CliHelpers
                                     RequestType = nameof(RebaseSourceEntitiesRequest),
                                     Data = JsonConvert.SerializeObject(new RebaseSourceEntitiesRequest()
                                     {
+                                        IncludeArchivedTrackingEntries = false,
                                         DataSource = dataSource,
                                         EntityType = srcEntityTypeGroup.Key.EntityType,
                                         EntityIds = batch,
-                                        RebaseTo = rebaseTo?.ToLower() == "now" ? DateTimeOffset.Now : DateTimeOffset.Parse(rebaseTo!)
+                                        RebaseTo = resolvedRebaseTo
                                     })
                                 };
                                 var adminApi = serviceProvider.GetRequiredService<ICLIApi>();
-                                var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseSourceEntitiesResponse>(req);
+                                var rebaseEntitiesResponse = await adminApi.PostAdminMessage<RebaseSourceEntitiesResponse>(req, cancellationToken);
+                                ShowRebaseWarnings(rebaseEntitiesResponse.Results);
                                 failures.AddRange(rebaseEntitiesResponse.Results.Where(w => !w.Success));
+                                succeeded += rebaseEntitiesResponse.Results.Count(w => w.Success);
+                                archivedCount += rebaseEntitiesResponse.Results.Sum(result => (long)result.ArchivedTrackingEntryCount);
 
                                 task.Increment(batch.Count);
 
                                 entityIds.RemoveRange(0, batch.Count);
 
-                                while (Console.KeyAvailable)
+                                while (!Console.IsInputRedirected && Console.KeyAvailable)
                                 {
                                     var kp = Console.ReadKey();
                                     if (kp.Key == ConsoleKey.Escape)
@@ -1411,9 +1479,10 @@ public static class CliHelpers
                 task.StopTask();
             });
 
-        AnsiConsole.WriteLine($"Rebased source entities for {Math.Max(totalCount - failures.Count, 0)} of {totalCount} DataHub entities. Failed {failures.Count}.");
+        AnsiConsole.WriteLine($"Rebased {succeeded} source entities. Failed {failures.Count}. Archived {archivedCount} tracking entries.");
         ShowRebaseFailures(failures, "source-entities-rebase-errors");
-        return 1;
+        return cancelled ? CliExitCodes.Cancelled
+            : failures.Count > 0 ? CliExitCodes.LegacyRuntimeFailure : CliExitCodes.LegacyRuntimeSuccess;
     }
     
     public static async Task<int> SaveToAsync(GetAlternateKeysWhereRequest whereReq, string saveTo, bool openFile, IServiceProvider serviceProvider)
@@ -1647,15 +1716,16 @@ public static class CliHelpers
     }
 
 
-    public static async Task<TRes> RetrievePagedResultsAsync<TReq, TRes>(IServiceProvider serviceProvider, TReq req)
+    public static async Task<TRes> RetrievePagedResultsAsync<TReq, TRes>(IServiceProvider serviceProvider, TReq req, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var adminApi = serviceProvider.GetRequiredService<ICLIApi>();
 
         var response = await adminApi.PostAdminMessage<TRes>(new SerializedRequest()
         {
             RequestType = typeof(TReq).Name,
             Data = JsonConvert.SerializeObject(req)
-        });
+        }, cancellationToken);
 
         return response;
     }

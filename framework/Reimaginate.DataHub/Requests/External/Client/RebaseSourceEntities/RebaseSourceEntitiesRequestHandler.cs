@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Reimaginate.DataHub.Requests.Internal.ProcessRebaseSourceEntities;
@@ -19,6 +20,7 @@ public class RebaseSourceEntitiesRequestHandler(IMediator mediator) : IHandler<R
             DataSource = request.DataSource,
             EntityType = request.EntityType,
             EntityIds = request.EntityIds,
+            IncludeArchivedTrackingEntries = request.IncludeArchivedTrackingEntries,
             RebaseTo = request.RebaseTo
         }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
@@ -27,14 +29,22 @@ public class RebaseSourceEntitiesRequestHandler(IMediator mediator) : IHandler<R
             DataSource = result.DataSource,
             EntityType = result.EntityType,
             EntityId = result.EntityId,
-            RebasedTo = request.RebaseTo,
+            RebasedTo = result.RebasedTo,
             Success = result.Success,
             FailureReason = result.FailureReason,
-            ArchivedTrackingEntries = result.ArchivedTrackingEntries
+            Warning = result.Warning,
+            ArchivedTrackingEntryCount = result.ArchivedTrackingEntryCount,
+            ArchivedTrackingEntries = request.IncludeArchivedTrackingEntries ? result.ArchivedTrackingEntries : new List<ChangeTrackingEntry>()
         }));
+
+        var failedCount = results.Count(result => !result.Success);
 
         return new RebaseSourceEntitiesResponse()
         {
+            Success = failedCount == 0,
+            FailureReason = failedCount > 0
+                ? $"{failedCount} of {results.Count} source entities failed to rebase. See Results for details."
+                : null,
             Results = results
         };
     }

@@ -23,6 +23,7 @@ using Reimaginate.DataServices;
 using Reimaginate.DataServices.Responses;
 using Reimaginate.DataHub.Services.AzureManagement;
 using Reimaginate.DataHub.Services.AutoNumbers;
+using Reimaginate.DataHub.Services.RebaseTracking;
 using Reimaginate.DataHub.Services.DynamicAssemblies;
 using Reimaginate.DataHub.Services.IdService;
 using Reimaginate.DataHub.Services.TimeService;
@@ -257,6 +258,7 @@ public static class DependencyInjection
         services.AddTransient<IMediator, Mediator>();
         Mediator.RegisterHandlers(services);
         RegisterGeneratedMediatorGaps(services);
+        services.AddSingleton<IRebaseCheckpointStore, CosmosRebaseCheckpointStore>();
         services.AddTransient<IMapper, Mapper>();
         Mapper.RegisterMaps(services);
 

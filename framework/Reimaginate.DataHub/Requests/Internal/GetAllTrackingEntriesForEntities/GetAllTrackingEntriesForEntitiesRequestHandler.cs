@@ -13,12 +13,15 @@ public class GetAllTrackingEntriesForEntitiesRequestHandler(IMediator mediator) 
 {
     public async Task<GetAllTrackingEntriesForEntitiesResponse> HandleAsync(GetAllTrackingEntriesForEntitiesRequest request, CancellationToken cancellationToken)
     {
+        var readCancellationToken = request.ObserveCancellation ? cancellationToken : CancellationToken.None;
+        readCancellationToken.ThrowIfCancellationRequested();
         var results = new List<ChangeTrackingEntry>();
 
         var entityIdsToProcess = new List<string>(request.EntityIds);
 
         while (entityIdsToProcess.Any())
         {
+            readCancellationToken.ThrowIfCancellationRequested();
             var batch = entityIdsToProcess.Take(5000).ToList();
 
             var getTrackingEntriesResponse = (await mediator.TrySend(new GetTrackingEntriesQuery()
@@ -27,12 +30,14 @@ public class GetAllTrackingEntriesForEntitiesRequestHandler(IMediator mediator) 
                 EntityType = request.EntityType,
                 EntityIds = batch,
                 PageSize = 5000
-            }, CancellationToken.None)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
+            }, readCancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
+            readCancellationToken.ThrowIfCancellationRequested();
             results.AddRange(getTrackingEntriesResponse.Results.Where(w => w != null));
 
             while (getTrackingEntriesResponse.MoreResultsAvailable)
             {
+                readCancellationToken.ThrowIfCancellationRequested();
                 getTrackingEntriesResponse = (await mediator.TrySend(new GetTrackingEntriesQuery()
                 {
                     DataSource = request.DataSource,
@@ -40,8 +45,9 @@ public class GetAllTrackingEntriesForEntitiesRequestHandler(IMediator mediator) 
                     EntityType = request.EntityType,
                     PageSize = 5000,
                     ContinuationToken = getTrackingEntriesResponse.ContinuationToken
-                }, CancellationToken.None)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
+                }, readCancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
 
+                readCancellationToken.ThrowIfCancellationRequested();
                 results.AddRange(getTrackingEntriesResponse.Results.Where(w => w != null));
             }
 
