@@ -1,3 +1,4 @@
+using Reimaginate.DataHub.Services.EntityConfig;
 using System.Globalization;
 using System.Text;
 using FluentAssertions;
@@ -394,7 +395,7 @@ public class ProcessPatchEntityRequestHandlerTests
             .Returns(Task.FromResult(new Response<ProcessingLock>(true, processingLock, null)));
         lockService.ReleaseLockAsync(processingLock, Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new Response<Null>(true, new Null(), null)));
-        var handler = new ProcessPatchEntityRequestHandler(mediator, lockService, Substitute.For<ITimeService>());
+        var handler = new ProcessPatchEntityRequestHandler(mediator, lockService, Substitute.For<ITimeService>(), Substitute.For<IEntityConfigService>());
 
         var response = await handler.HandleAsync(new ProcessPatchEntityRequest
         {
@@ -404,7 +405,7 @@ public class ProcessPatchEntityRequestHandlerTests
             EntityType = "Event",
             EntityId = "entity-1",
             Operations = operations.ToList(),
-            Cache = new Dictionary<string, object> { ["DataHubEntities"] = new List<JObject> { entity } },
+            Cache = new Dictionary<string, object> { ["DataHubEntities"] = new List<JObject> { entity }, ["TrackingEntries"] = new List<ChangeTrackingEntry>() },
             CommitToDb = false,
             Silent = true
         }, CancellationToken.None);

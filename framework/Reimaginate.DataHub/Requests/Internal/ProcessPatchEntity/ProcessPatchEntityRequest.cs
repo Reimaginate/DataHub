@@ -29,4 +29,6 @@ public class ProcessPatchEntityRequest : IRequest<ProcessPatchEntityResponse>
     public bool Silent { get; set; }
 
     public bool DoNotTrack { get; set; }
+    // Set only by the batch handler from the owner's configuration snapshot.
+    internal bool? OwnerDoNotTrack { get; set; }
 }

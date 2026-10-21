@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using Reimaginate.DataHub.DataAccess.Queries;
 using Reimaginate.DataHub.DataAccess.Queries.GetCosmosDocuments;
 using Reimaginate.DataHub.Requests.Internal.ProcessResolutionPromises;
-using Reimaginate.DataHub.Services.TimeService;
+using Reimaginate.DataHub.Services.EntityConfig;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataServices;
 using Reimaginate.DataServices.Responses;
@@ -14,19 +14,14 @@ using Reimaginate.Mediator;
 
 namespace Reimaginate.DataHub.Requests.Internal.ResolveEntityReferenceResolutionPromises;
 
-public class ResolveEntityReferenceResolutionPromisesRequestHandler(IMediator mediator) : IHandler<ResolveEntityReferenceResolutionPromisesRequest, ResolveEntityReferenceResolutionPromisesResponse>
+public class ResolveEntityReferenceResolutionPromisesRequestHandler(IMediator mediator, IEntityConfigService entityConfigService) : IHandler<ResolveEntityReferenceResolutionPromisesRequest, ResolveEntityReferenceResolutionPromisesResponse>
 {
-    public ResolveEntityReferenceResolutionPromisesRequestHandler(IMediator mediator, ITimeService timeService)
-        : this(mediator)
-    {
-    }
-
     public async Task<ResolveEntityReferenceResolutionPromisesResponse> HandleAsync(
         ResolveEntityReferenceResolutionPromisesRequest request,
         CancellationToken cancellationToken)
     {
         var promises = await LoadPromises(request.SourceSystemEntityIds, cancellationToken);
-        var processor = new ProcessResolutionPromisesProcessor(mediator);
+        var processor = new ProcessResolutionPromisesProcessor(mediator, entityConfigService);
         var response = await processor.ProcessAsync(
             promises,
             (actionablePromises, _) => Task.FromResult(ResolveKnownTargets(actionablePromises, request.ResolvedReferencedEntities)),

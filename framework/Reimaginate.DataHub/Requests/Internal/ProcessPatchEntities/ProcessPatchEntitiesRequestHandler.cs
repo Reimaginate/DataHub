@@ -12,6 +12,7 @@ using Reimaginate.DataHub.Requests.Internal.GetAllTrackingEntriesForEntities;
 using Reimaginate.DataHub.Requests.Internal.GetMaterializedEntitiesById;
 using Reimaginate.DataHub.Requests.Internal.ProcessPatchEntity;
 using Reimaginate.DataHub.Services.TimeService;
+using Reimaginate.DataHub.Services.EntityConfig;
 using Reimaginate.DataHub.SharedModels.Constants;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Notifications;
@@ -21,7 +22,7 @@ using Reimaginate.ProcessingLockService.Abstractions;
 
 namespace Reimaginate.DataHub.Requests.Internal.ProcessPatchEntities;
 
-public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingLockService processingLockService, ITimeService timeService)
+public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingLockService processingLockService, ITimeService timeService, IEntityConfigService entityConfigService)
     : IHandler<ProcessPatchEntitiesRequest, ProcessPatchEntitiesResponse>
 {
     public async Task<ProcessPatchEntitiesResponse> HandleAsync(ProcessPatchEntitiesRequest request, CancellationToken cancellationToken)
@@ -32,6 +33,22 @@ public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingL
         foreach (var entityTypeGroup in groupedByEntityType)
         {
             var requestsToProcess = new List<ProcessPatchEntityRequest>(entityTypeGroup.ToList());
+            bool ownerDoNotTrack;
+            try
+            {
+                ownerDoNotTrack = entityTypeGroup.Key.DataSource == DataSources.DataHub &&
+                    (await entityConfigService.GetEntityConfig(entityTypeGroup.Key.EntityType, cancellationToken, cacheMissing: true))?.DoNotTrack == true;
+            }
+            catch (Exception ex)
+            {
+                results.AddRange(requestsToProcess.Select(item => new ProcessPatchEntityResponse
+                {
+                    RequestId = item.RequestId,
+                    Success = false,
+                    FailureReason = ex.Message
+                }));
+                continue;
+            }
 
             while (requestsToProcess.Any())
             {
@@ -49,11 +66,14 @@ public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingL
                     var batchEntityIds = batch.Select(s => s.EntityId).ToList();
                     var batchDataHubEntityIds = batch.Where(w => w.DataSource == DataSources.DataHub).Select(s => s.EntityId).ToList();
 
-                    var trackingEntriesTask = mediator.TrySend(new GetAllTrackingEntriesForEntitiesRequest()
+                    var trackingEntriesTask = ownerDoNotTrack
+                        ? Task.FromResult<(GetAllTrackingEntriesForEntitiesResponse Response, Exception Exception)>((new() { TrackingEntries = [] }, null))
+                        : mediator.TrySend(new GetAllTrackingEntriesForEntitiesRequest()
                     {
                         DataSource = entityTypeGroup.Key.DataSource,
                         EntityType = entityTypeGroup.Key.EntityType,
-                        EntityIds = batchEntityIds
+                        EntityIds = batchEntityIds,
+                        ObserveCancellation = true
                     }, cancellationToken);
 
                     Task<GetMaterializedEntitiesByIdResponse> dataHubEntitiesTask = batchDataHubEntityIds.Any()
@@ -79,6 +99,7 @@ public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingL
                     {
                         r.CorrelationId = request.CorrelationId;
                         r.CommitToDb = false;
+                        r.OwnerDoNotTrack = ownerDoNotTrack;
                         r.Silent = request.Silent || r.Silent;
                         r.DoNotTrack = request.DoNotTrack || r.DoNotTrack;
                         r.DispatchNotifications = request.DispatchNotifications || r.DispatchNotifications;
@@ -99,7 +120,7 @@ public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingL
 
                     var patchEntityResponses = tasks.Select(s => s.Result).ToList();
 
-                    var addTrackingRequests = patchEntityResponses.Where(w => !request.DoNotTrack && w.IsTrackedEntity && w.ChangeSet != null).Select(response =>
+                    var addTrackingRequests = patchEntityResponses.Where(w => !request.DoNotTrack && w.ShouldWriteTracking && w.ChangeSet != null).Select(response =>
                     {
                         var req = batch[patchEntityResponses.IndexOf(response)];
 

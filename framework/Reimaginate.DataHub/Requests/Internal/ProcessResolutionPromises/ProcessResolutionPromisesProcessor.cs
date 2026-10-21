@@ -12,6 +12,7 @@ using Reimaginate.DataHub.DataAccess.Commands.UpsertDataHubEntities;
 using Reimaginate.DataHub.Helpers;
 using Reimaginate.DataHub.Requests.Internal.AddTrackedEntityChangeSet;
 using Reimaginate.DataHub.Requests.Internal.AddTrackedEntityChangeSets;
+using Reimaginate.DataHub.Services.EntityConfig;
 using Reimaginate.DataHub.SharedModels.Constants;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Requests.Client;
@@ -49,7 +50,7 @@ internal sealed class ProcessResolutionPromisesResponse
     public List<JObject> UpdatedDataHubEntities { get; init; } = [];
 }
 
-internal sealed class ProcessResolutionPromisesProcessor(IMediator mediator)
+internal sealed class ProcessResolutionPromisesProcessor(IMediator mediator, IEntityConfigService entityConfigService)
 {
     private const int CommitBatchSize = 100;
     private const int DeleteBatchSize = 500;
@@ -68,6 +69,15 @@ internal sealed class ProcessResolutionPromisesProcessor(IMediator mediator)
         }
 
         var ownerEntities = await LoadOwnerEntities(promiseList, cancellationToken);
+        var untrackedOwnerTypes = new HashSet<string>();
+        if (!options.DoNotTrack)
+        {
+            foreach (var entityType in ownerEntities.Keys.Select(key => key.EntityType).Distinct())
+            {
+                if ((await entityConfigService.GetEntityConfig(entityType, cancellationToken, cacheMissing: true))?.DoNotTrack == true)
+                    untrackedOwnerTypes.Add(entityType);
+            }
+        }
         var actionablePromises = new List<ResolutionPromise>();
 
         foreach (var promise in promiseList)
@@ -179,6 +189,8 @@ internal sealed class ProcessResolutionPromisesProcessor(IMediator mediator)
             result.Status = ResolutionPromiseProcessingStatus.Resolved;
             result.Reason = "Resolved by alternate key.";
             result.ResolvedReference = resolvedReference;
+
+            if (options.DoNotTrack || untrackedOwnerTypes.Contains(promise.DataHubEntityType)) continue;
 
             var changeSet = (JObject)ChangeTrackingHelper.DiffIgnoringEquivalentValueTokens(preResolutionEntity, ownerEntity);
             changeSetsToAdd.Add(new AddTrackedEntityChangeSetRequest

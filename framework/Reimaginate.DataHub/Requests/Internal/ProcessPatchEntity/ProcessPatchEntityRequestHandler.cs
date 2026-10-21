@@ -11,7 +11,9 @@ using Reimaginate.DataHub.Requests.Internal.AddTrackedEntityChangeSet;
 using Reimaginate.DataHub.Requests.Internal.DispatchNotifications;
 using Reimaginate.DataHub.Requests.Internal.GetMaterializedEntitiesById;
 using Reimaginate.DataHub.Requests.Internal.GetTrackedEntity;
+using Reimaginate.DataHub.Requests.Internal.GetAllTrackingEntriesForEntities;
 using Reimaginate.DataHub.Services.TimeService;
+using Reimaginate.DataHub.Services.EntityConfig;
 using Reimaginate.DataHub.SharedModels.Constants;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Core.Models.Failures;
@@ -22,7 +24,7 @@ using Reimaginate.ProcessingLockService.Abstractions;
 
 namespace Reimaginate.DataHub.Requests.Internal.ProcessPatchEntity;
 
-public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLockService processingLockService, ITimeService timeService)
+public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLockService processingLockService, ITimeService timeService, IEntityConfigService entityConfigService)
     : IHandler<ProcessPatchEntityRequest, ProcessPatchEntityResponse>
 {
     public async Task<ProcessPatchEntityResponse> HandleAsync(ProcessPatchEntityRequest request, CancellationToken cancellationToken)
@@ -66,7 +68,25 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
                         originalEntity = getMaterializedEntitiesResponse.Results.FirstOrDefault();
                     }
 
-                    isTrackedEntity = trackingEntryCache?.Any(w => w.DataSource == request.DataSource && w.EntityType == request.EntityType && w.EntityId == request.EntityId) ?? false;
+                    var explicitlyUntracked = request.OwnerDoNotTrack
+                        ?? ((await entityConfigService.GetEntityConfig(request.EntityType, cancellationToken, cacheMissing: true))?.DoNotTrack == true);
+                    if (!explicitlyUntracked && trackingEntryCache == null)
+                    {
+                        var trackingResponse = (await mediator.TrySend(new GetAllTrackingEntriesForEntitiesRequest
+                        {
+                            DataSource = request.DataSource,
+                            EntityType = request.EntityType,
+                            EntityIds = [request.EntityId],
+                            ObserveCancellation = true
+                        }, cancellationToken)) switch
+                        {
+                            { Item2: { } exception } => throw exception,
+                            { Item1: var value } => value
+                        };
+                        trackingEntryCache = trackingResponse.TrackingEntries;
+                    }
+                    isTrackedEntity = !explicitlyUntracked &&
+                        trackingEntryCache?.Any(w => w.DataSource == request.DataSource && w.EntityType == request.EntityType && w.EntityId == request.EntityId) == true;
                     break;
 
 
@@ -166,6 +186,8 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
             var updateTimestamp = request.Silent ? originalTimestamp : request.Timestamp ?? timeService.Now();
             updatingEntity[nameof(DataHubEntity.lastUpdated)] = updateTimestamp;
 
+            var shouldWriteTracking = isTrackedEntity && !request.DoNotTrack && changeSet != null;
+
             if (changeSet == null || !request.CommitToDb)
             {
                 return new ProcessPatchEntityResponse()
@@ -174,6 +196,7 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
                     Success = !failures.Any(),
                     PatchFailures = failures,
                     IsTrackedEntity = isTrackedEntity,
+                    ShouldWriteTracking = shouldWriteTracking,
                     IsDataHubEntity = request.DataSource == DataSources.DataHub,
                     ChangeSet = changeSet,
                     UpdatedEntity = updatingEntity,
@@ -181,7 +204,7 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
                 };
             }
 
-            if (isTrackedEntity && !request.DoNotTrack)
+            if (shouldWriteTracking)
             {
                 _ = (await mediator.SendAsync(new AddTrackedEntityChangeSetRequest()
                 {
@@ -209,6 +232,7 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
                         FailureReason = BuildPersistenceFailureReason("Failed to upsert DataHub entity", upsertResponse.Failures.Select(s => s.Error?.Message)),
                         PatchFailures = failures,
                         IsTrackedEntity = isTrackedEntity,
+                        ShouldWriteTracking = shouldWriteTracking,
                         IsDataHubEntity = isDataHubEntity,
                         ChangeSet = changeSet,
                         UpdatedEntity = updatingEntity,
@@ -243,6 +267,7 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
                     FailureReason = "ONE_OR_MORE_PATCH_OPERATIONS_FAILED",
                     PatchFailures = failures,
                     IsTrackedEntity = isTrackedEntity,
+                    ShouldWriteTracking = shouldWriteTracking,
                     IsDataHubEntity = isDataHubEntity,
                     ChangeSet = changeSet,
                     UpdatedEntity = updatingEntity,
@@ -256,6 +281,7 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
                 RequestId = request.RequestId,
                 Success = true,
                 IsTrackedEntity = isTrackedEntity,
+                ShouldWriteTracking = shouldWriteTracking,
                 IsDataHubEntity = isDataHubEntity,
                 ChangeSet = changeSet,
                 UpdatedEntity = updatingEntity,

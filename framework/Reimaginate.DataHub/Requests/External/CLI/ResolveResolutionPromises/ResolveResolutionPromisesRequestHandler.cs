@@ -7,6 +7,7 @@ using Reimaginate.DataHub.DataAccess.Queries;
 using Reimaginate.DataHub.DataAccess.Queries.GetCosmosDocuments;
 using Reimaginate.DataHub.Requests.Internal.ProcessResolutionPromises;
 using Reimaginate.DataHub.Requests.Internal.ResolveEntityReferenceLookups;
+using Reimaginate.DataHub.Services.EntityConfig;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.DataHub.SharedModels.Exceptions;
 using Reimaginate.DataHub.SharedModels.Requests.CLI;
@@ -16,7 +17,7 @@ using Reimaginate.Mediator;
 
 namespace Reimaginate.DataHub.Requests.External.CLI.ResolveResolutionPromises;
 
-public class ResolveResolutionPromisesRequestHandler(IMediator mediator) : IHandler<ResolveResolutionPromisesRequest, ResolveResolutionPromisesResponse>
+public class ResolveResolutionPromisesRequestHandler(IMediator mediator, IEntityConfigService entityConfigService) : IHandler<ResolveResolutionPromisesRequest, ResolveResolutionPromisesResponse>
 {
     private const int MaximumPageSize = 500;
     private const string MultipleAlternateKeyMatchesReason = "Multiple entities found with matching alternate keys";
@@ -32,7 +33,7 @@ public class ResolveResolutionPromisesRequestHandler(IMediator mediator) : IHand
             .Where(promise => !string.IsNullOrWhiteSpace(promise.id))
             .Where(promise => processedPromiseIds.Add(promise.id))
             .ToList();
-        var processor = new ProcessResolutionPromisesProcessor(mediator);
+        var processor = new ProcessResolutionPromisesProcessor(mediator, entityConfigService);
         var processingResponse = await processor.ProcessAsync(
             promises,
             ResolveTargets,

@@ -10,13 +10,14 @@ using Reimaginate.DataHub.Helpers;
 using Reimaginate.DataHub.Requests.Internal.AddTrackedEntityChangeSet;
 using Reimaginate.DataHub.Requests.Internal.AddTrackedEntityChangeSets;
 using Reimaginate.DataHub.Requests.Internal.FindEntitiesByAlternateKey;
+using Reimaginate.DataHub.Services.EntityConfig;
 using Reimaginate.DataHub.SharedModels.Constants;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.Mediator;
 
 namespace Reimaginate.DataHub.Requests.Internal.ResolveExternalEntityReferences;
 
-public class ResolveExternalEntityReferencesRequestHandler(IMediator mediator) : IHandler<ResolveExternalEntityReferencesRequest, ResolveExternalEntityReferencesRequestResponse>
+public class ResolveExternalEntityReferencesRequestHandler(IMediator mediator, IEntityConfigService entityConfigService) : IHandler<ResolveExternalEntityReferencesRequest, ResolveExternalEntityReferencesRequestResponse>
 {
     public async Task<ResolveExternalEntityReferencesRequestResponse> HandleAsync(ResolveExternalEntityReferencesRequest request, CancellationToken cancellationToken)
     {
@@ -32,6 +33,16 @@ public class ResolveExternalEntityReferencesRequestHandler(IMediator mediator) :
             .ToList();
 
         if (!externalEntityReferences.Any()) return new ResolveExternalEntityReferencesRequestResponse();
+
+        var untrackedOwnerTypes = new HashSet<string>();
+        if (!request.DoNotTrack)
+        {
+            foreach (var entityType in externalEntityReferences.Select(reference => reference.DataHubEntityType).Distinct())
+            {
+                if ((await entityConfigService.GetEntityConfig(entityType, cancellationToken, cacheMissing: true))?.DoNotTrack == true)
+                    untrackedOwnerTypes.Add(entityType);
+            }
+        }
 
         var updatedDataHubEntities = new List<JObject>();
         var changeSetsToAdd = new List<AddTrackedEntityChangeSetRequest>();
@@ -77,6 +88,8 @@ public class ResolveExternalEntityReferencesRequestHandler(IMediator mediator) :
                 if (existingEntry != null) updatedDataHubEntities.Remove(existingEntry);
 
                 updatedDataHubEntities.Add(updatedDataHubEntity);
+
+                if (request.DoNotTrack || untrackedOwnerTypes.Contains(extEntityReferenceLocation.DataHubEntityType)) continue;
 
                 var changeSet = (JObject)ChangeTrackingHelper.DiffIgnoringEquivalentValueTokens(matchingRequestEntity, updatedDataHubEntity);
 

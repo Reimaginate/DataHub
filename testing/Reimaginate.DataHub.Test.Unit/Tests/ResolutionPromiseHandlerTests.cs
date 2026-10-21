@@ -1,3 +1,5 @@
+using NSubstitute;
+using Reimaginate.DataHub.Services.EntityConfig;
 using FluentAssertions;
 using Newtonsoft.Json.Linq;
 using OneOf;
@@ -37,6 +39,135 @@ namespace Reimaginate.DataHub.Test.Unit.Tests;
 
 public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
 {
+    [Theory]
+    [Trait("Category", "TrackingPolicy")]
+    [InlineData("automatic", false)]
+    [InlineData("cli", false)]
+    [InlineData("cli", true)]
+    public async Task Resolution_uses_each_owner_policy_and_preserves_updates_and_promise_handling(string route, bool dryRun)
+    {
+        var configs = Substitute.For<IEntityConfigService>();
+        configs.GetEntityConfig("Booking", Arg.Any<CancellationToken>(), cacheMissing: true).Returns(new EntityConfig { DoNotTrack = true });
+        configs.GetEntityConfig("TrackedOwner", Arg.Any<CancellationToken>(), cacheMissing: true).Returns(new EntityConfig { DoNotTrack = false });
+        var owners = Enumerable.Range(0, 10).Select(i => Entity("booking-" + i, "Booking", new JObject
+        {
+            ["Performance"] = Reference("SRC1", "TypeA", "Performance", "source-1"),
+            ["Lines"] = new JArray(new JObject { ["Performance"] = Reference("SRC1", "TypeA", "Performance", "source-1") })
+        })).ToList();
+        owners.Add(Entity("tracked", "TrackedOwner", new JObject { ["Performance"] = Reference("SRC1", "TypeA", "Performance", "source-1") }));
+        List<ResolutionPromise> promises = [];
+        AddTrackedEntityChangeSetsRequest? tracking = null;
+        UpsertDataHubEntitiesCommand? upsert = null;
+        DeleteCosmosDocumentsCommand<ResolutionPromise>? deleted = null;
+        var mediator = new RecordingMediator(request =>
+        {
+            switch (request)
+            {
+                case UpsertCosmosDocumentsCommand<ResolutionPromise> create:
+                    promises = create.Documents;
+                    return new UpsertCosmosDocumentsResponse<ResolutionPromise> { Successes = create.Documents, Failures = [] };
+                case GetCosmosDocumentsQuery<ResolutionPromise>:
+                    return new PagedResults<ResolutionPromise> { Results = promises };
+                case GetDataHubEntitiesByIdRequest get:
+                    return new GetDataHubEntitiesByIdResponse { Results = owners.Where(e => e.DataHubEntityType() == get.EntityType).ToList() };
+                case FindMatchingEntitiesQuery find: return FoundEntity(LookupValue(find), find.EntityType);
+                case AddTrackedEntityChangeSetsRequest add: return Capture(add, ref tracking, TrackingSuccess());
+                case UpsertDataHubEntitiesCommand save: return Capture(save, ref upsert, UpsertSuccess(save));
+                case DeleteCosmosDocumentsCommand<ResolutionPromise> delete: return CaptureDelete(delete, ref deleted);
+                default: throw new InvalidOperationException(request.GetType().Name);
+            }
+        });
+        await new CreateDeferredEntityResolutionPromisesRequestHandler(mediator).HandleAsync(
+            new CreateDeferredEntityResolutionPromisesRequest { Entities = owners }, TestContext.Current.CancellationToken);
+        promises.Should().HaveCount(21, "both header and collection references must be genuinely deferred");
+        mediator.Requests.Clear();
+
+        if (route == "automatic")
+            await new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, configs).HandleAsync(
+                new ResolveEntityReferenceResolutionPromisesRequest
+                {
+                    SourceSystemEntityIds = ["source-1"],
+                    ResolvedReferencedEntities = [Resolved("SRC1", "TypeA", "source-1", "Performance", "dh-source-1")]
+                }, TestContext.Current.CancellationToken);
+        else
+        {
+            var result = await new ResolveResolutionPromisesRequestHandler(mediator, configs).HandleAsync(
+                new ResolveResolutionPromisesRequest { PromiseIds = promises.Select(p => p.id).ToList(), DryRun = dryRun }, TestContext.Current.CancellationToken);
+            result.ResolvedCount.Should().Be(21);
+        }
+
+        if (dryRun)
+        {
+            tracking.Should().BeNull();
+            upsert.Should().BeNull();
+            deleted.Should().BeNull();
+            AssertExternalReference(owners[0], "Performance", "SRC1", "TypeA", "Performance", "source-1");
+        }
+        else
+        {
+            tracking!.Requests.Should().ContainSingle().Which.EntityType.Should().Be("TrackedOwner");
+            upsert!.Entities.Should().HaveCount(11);
+            foreach (var owner in upsert.Entities)
+            {
+                AssertResolvedReference(owner, "Performance", "Performance", "dh-source-1");
+                if (owner.DataHubEntityType() == "Booking")
+                    AssertResolvedReference(owner, "Lines[0].Performance", "Performance", "dh-source-1");
+            }
+            deleted!.Documents.Select(p => p.id).Should().BeEquivalentTo(promises.Select(p => p.id));
+        }
+        await configs.Received(1).GetEntityConfig("Booking", Arg.Any<CancellationToken>(), cacheMissing: true);
+        await configs.Received(1).GetEntityConfig("TrackedOwner", Arg.Any<CancellationToken>(), cacheMissing: true);
+        await configs.DidNotReceive().GetEntityConfig("Performance", Arg.Any<CancellationToken>(), cacheMissing: true);
+    }
+
+    [Fact]
+    [Trait("Category", "TrackingPolicy")]
+    public async Task Immediate_resolution_filters_owner_tracking_without_losing_updates()
+    {
+        var configs = Substitute.For<IEntityConfigService>();
+        configs.GetEntityConfig("Booking", Arg.Any<CancellationToken>(), cacheMissing: true).Returns(new EntityConfig { DoNotTrack = true });
+        AddTrackedEntityChangeSetsRequest? tracking = null;
+        UpsertDataHubEntitiesCommand? upsert = null;
+        var mediator = new RecordingMediator(request => request switch
+        {
+            FindEntitiesByAlternateKeyRequest => new JArray(Entity("performance", "Performance", new JObject())),
+            AddTrackedEntityChangeSetsRequest add => Capture(add, ref tracking, TrackingSuccess()),
+            UpsertDataHubEntitiesCommand save => Capture(save, ref upsert, UpsertSuccess(save)),
+            _ => throw new InvalidOperationException(request.GetType().Name)
+        });
+        await new ResolveExternalEntityReferencesRequestHandler(mediator, configs).HandleAsync(
+            new ResolveExternalEntityReferencesRequest
+            {
+                DataHubEntitiesToResolve = new[] { "Booking", "TrackedOwner" }.Select(type => Entity(type, type,
+                    new JObject { ["Performance"] = Reference("SRC1", "TypeA", "Performance", "source-1") })).ToList()
+            }, TestContext.Current.CancellationToken);
+        upsert!.Entities.Should().HaveCount(2);
+        tracking!.Requests.Should().ContainSingle().Which.EntityType.Should().Be("TrackedOwner");
+        foreach (var entity in upsert.Entities) AssertResolvedReference(entity, "Performance", "Performance", "performance");
+    }
+
+    [Fact]
+    [Trait("Category", "TrackingPolicy")]
+    public async Task Deferred_resolution_policy_failure_prevents_all_persistence()
+    {
+        var configs = Substitute.For<IEntityConfigService>();
+        configs.GetEntityConfig("Booking", Arg.Any<CancellationToken>(), cacheMissing: true)
+            .Returns(Task.FromException<EntityConfig>(new InvalidOperationException("configuration unavailable")));
+        var mediator = new RecordingMediator(request => request switch
+        {
+            GetCosmosDocumentsQuery<ResolutionPromise> => new PagedResults<ResolutionPromise>
+            { Results = [Promise("promise", "Booking", "booking", "Performance", "SRC1", "TypeA", "Performance", "source-1")] },
+            GetDataHubEntitiesByIdRequest => new GetDataHubEntitiesByIdResponse
+            { Results = [Entity("booking", "Booking", new JObject { ["Performance"] = Reference("SRC1", "TypeA", "Performance", "source-1") })] },
+            _ => throw new InvalidOperationException("unexpected write")
+        });
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, configs).HandleAsync(
+                new ResolveEntityReferenceResolutionPromisesRequest
+                { SourceSystemEntityIds = ["source-1"], ResolvedReferencedEntities = [Resolved("SRC1", "TypeA", "source-1", "Performance", "performance")] }, TestContext.Current.CancellationToken));
+        mediator.Requests.Should().HaveCount(2);
+    }
+
     [Fact]
     public async Task CreateDeferredEntityResolutionPromises_should_create_promises_for_top_level_nested_and_array_references()
     {
@@ -160,7 +291,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                 step.Exec(async (currentObject, stash) =>
                 {
                     var mediator = new RecordingMediator(_ => throw new InvalidOperationException("No mediator calls expected."));
-                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator);
+                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveExternalEntityReferencesRequest
                     {
@@ -210,7 +341,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator);
+                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
                     var entity = Entity("owner-1", "OwnerType", new JObject
                     {
                         ["Primary"] = Reference("SRC1", "TypeA", "ParentDH", "parent-1", DateTimeOffset.Parse("2024-01-01T00:00:00Z")),
@@ -277,7 +408,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator);
+                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveExternalEntityReferencesRequest
                     {
@@ -320,7 +451,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator);
+                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveExternalEntityReferencesRequest
                     {
@@ -359,7 +490,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator);
+                    var handler = new ResolveExternalEntityReferencesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var act = () => handler.HandleAsync(new ResolveExternalEntityReferencesRequest
                     {
@@ -513,7 +644,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -574,7 +705,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -641,7 +772,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -690,7 +821,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-1"]
         }, CancellationToken.None);
@@ -735,7 +866,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-1"]
         }, CancellationToken.None);
@@ -760,7 +891,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-1"]
         }, CancellationToken.None);
@@ -806,7 +937,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-duplicate", "promise-resolved", "promise-unresolved", "promise-stale"]
         }, CancellationToken.None);
@@ -852,7 +983,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var act = () => new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var act = () => new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-duplicate"],
             StopOnFailure = true
@@ -889,7 +1020,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-duplicate"],
             DryRun = true
@@ -921,7 +1052,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-1"],
             DryRun = true
@@ -955,7 +1086,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             PromiseIds = ["promise-1"],
             DoNotTrack = true
@@ -993,7 +1124,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        var response = await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        var response = await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             WhereClause = "x.DataHubEntityType = @ownerType",
             Parameters = [new DataHubQueryParameter { Name = "ownerType", Value = "OwnerType" }],
@@ -1033,7 +1164,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
             _ => throw new InvalidOperationException($"Unexpected mediator request {request.GetType().Name}")
         });
 
-        await new ResolveResolutionPromisesRequestHandler(mediator).HandleAsync(new ResolveResolutionPromisesRequest
+        await new ResolveResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>()).HandleAsync(new ResolveResolutionPromisesRequest
         {
             WhereClause = "x.DataHubEntityType = 'OwnerType'",
             PageSize = requestedPageSize,
@@ -1464,7 +1595,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -1540,7 +1671,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -1615,7 +1746,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -1679,7 +1810,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -1747,7 +1878,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                                 throw new InvalidOperationException(request.GetType().FullName);
                         }
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -1796,7 +1927,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var response = await handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {
@@ -1845,7 +1976,7 @@ public class ResolutionPromiseHandlerTests : ScenarioUnitTestBase
                             _ => throw new InvalidOperationException(request.GetType().FullName)
                         };
                     });
-                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, new FixedTimeService(DateTimeOffset.Parse("2024-12-01T00:00:00Z")));
+                    var handler = new ResolveEntityReferenceResolutionPromisesRequestHandler(mediator, Substitute.For<IEntityConfigService>());
 
                     var act = () => handler.HandleAsync(new ResolveEntityReferenceResolutionPromisesRequest
                     {

@@ -11,6 +11,7 @@ public class ProcessPatchEntityResponse
     public string FailureReason { get; set; }
     public List<PatchFailure> PatchFailures { get; set; }
     public bool IsTrackedEntity { get; set; }
+    public bool ShouldWriteTracking { get; set; }
     public JObject ChangeSet { get; set; }
     public JObject UpdatedEntity { get; set; }
     public bool IsDataHubEntity { get; set; }
