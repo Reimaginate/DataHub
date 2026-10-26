@@ -207,36 +207,21 @@ public class MergeEntitiesRequestHandler(IMediator mediator, IEntityConfigServic
     {
         if (existingEntityIds.Any() || newEntityMergeRequestsToProcessAsUpdates.Any())
         {
-            List<ProcessingLock> dataHubEntityLocks = null;
+            var existingEntityMergeReqests = mergeRequests.Where(w => existingEntityIds.Contains(w.SourceEntityId)).ToList();
+            var mergeRequestsToProcess = newEntityMergeRequestsToProcessAsUpdates.Concat(existingEntityMergeReqests).ToList();
 
-            try
+            // The update handler locks the resolved DataHub IDs before reading and writing.
+            var mergeUpdatedEntitiesResponse = (await mediator.TrySend(new MergeExistingEntitiesRequest()
             {
-                var lockIds = existingEntityIds.Select(entityId => $"entities/{DataSources.DataHub}/{dataHubEntityType}/{entityId}").ToList();
-                var getLocksResponse = await processingLockService.WaitForLocksAsync(lockIds, correlationId, duration: TimeSpan.FromMinutes(5), waitTimeOut: TimeSpan.FromMinutes(5), cancellationToken: cancellationToken);
-                getLocksResponse.ThrowIfUnsuccessful();
-                dataHubEntityLocks = getLocksResponse.Result;
-
-                var existingEntityMergeReqests = mergeRequests.Where(w => existingEntityIds.Contains(w.SourceEntityId)).ToList();
-                var mergeRequestsToProcess = newEntityMergeRequestsToProcessAsUpdates.Concat(existingEntityMergeReqests).ToList();
-
-                var mergeUpdatedEntitiesResponse = (await mediator.TrySend(new MergeExistingEntitiesRequest()
-                {
-                    DataSource = dataSource,
-                    DataHubEntityType = dataHubEntityType,
-                    SourceEntityType = sourceEntityType,
-                    MergeRequests = mergeRequestsToProcess,
-                    ResolvedDataHubEntities = resolvedDataHubEntities,
-                    EntityConfig = entityConfig
-                }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
-                results.AddRange(mergeUpdatedEntitiesResponse.Results);
-            }
-            finally
-            {
-                if (dataHubEntityLocks != null)
-                {
-                    await processingLockService.ReleaseLocksAsync(dataHubEntityLocks, cancellationToken);
-                }
-            }
+                CorrelationId = correlationId,
+                DataSource = dataSource,
+                DataHubEntityType = dataHubEntityType,
+                SourceEntityType = sourceEntityType,
+                MergeRequests = mergeRequestsToProcess,
+                ResolvedDataHubEntities = resolvedDataHubEntities,
+                EntityConfig = entityConfig
+            }, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
+            results.AddRange(mergeUpdatedEntitiesResponse.Results);
         }
     }
 
@@ -275,7 +260,7 @@ public class MergeEntitiesRequestHandler(IMediator mediator, IEntityConfigServic
                         DataHubEntityReference = new EntityReference()
                         {
                             EntityType = e.DataHubEntityType,
-                            EntityId = e.SourceEntityId
+                            EntityId = e.DataHubEntityId
                         },
                         SourceEntityReference = new ExternalEntityReference()
                         {

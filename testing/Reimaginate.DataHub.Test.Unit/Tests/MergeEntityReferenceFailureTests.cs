@@ -158,6 +158,36 @@ public class MergeEntityReferenceFailureTests
         await harness.AssertSourceLocksReleased();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task New_entity_follow_up_uses_the_returned_id_and_preserves_correlation(bool tracked)
+    {
+        var harness = new MergeHarness(new ResolveEntityReferencesResponse { Success = true });
+        var first = Merge("source-1", "InventoryItem");
+        first.Data["lastUpdated"] = new DateTimeOffset(2026, 5, 22, 8, 0, 0, TimeSpan.Zero);
+        var followUp = Merge("source-1", "InventoryItem");
+        followUp.Data["lastUpdated"] = new DateTimeOffset(2026, 5, 22, 8, 1, 0, TimeSpan.Zero);
+
+        // This boundary returns a creation result without mutating the shared reference list.
+        var response = await harness.HandleAsync(tracked, [followUp, first]);
+
+        response.Success.Should().BeTrue(response.FailureReason);
+        response.Results.Should().HaveCount(2).And.OnlyContain(result => result.DataHubEntityId == "new-source-1");
+        harness.ExistingMergeRequests.Should().ContainSingle().Which.Should().BeSameAs(followUp);
+        var update = harness.Mediator.Requests.Single(request => request is MergeExistingEntitiesRequest or MergeExistingUntrackedEntitiesRequest);
+        var (correlationId, references) = update switch
+        {
+            MergeExistingEntitiesRequest request => (request.CorrelationId, request.ResolvedDataHubEntities),
+            MergeExistingUntrackedEntitiesRequest request => (request.CorrelationId, request.ResolvedDataHubEntities),
+            _ => throw new InvalidOperationException()
+        };
+        correlationId.Should().Be("test-merge");
+        references.Should().ContainSingle().Which.DataHubEntityReference
+            .Should().BeEquivalentTo(new EntityReference { EntityType = "InventoryItem", EntityId = "new-source-1" });
+        await harness.AssertSourceLocksReleased();
+    }
+
     private static MergeEntityRequest Merge(string sourceId, string entityType = "Booking") => new()
     {
         DataSource = "Ticketure",

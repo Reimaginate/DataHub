@@ -113,7 +113,18 @@ public class ProcessPatchEntitiesRequestHandler(IMediator mediator, IProcessingL
                             r.Cache.Add("DataHubEntities", dataHubEntities);
                         }
 
-                        tasks.Add(Task.Run(async () => (await mediator.TrySend(r, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue }, cancellationToken));
+                        tasks.Add(Task.Run(async () =>
+                        {
+                            r.EntityLockHeldByBatch = true;
+                            try
+                            {
+                                return (await mediator.TrySend(r, cancellationToken)) switch { { Item2: { } exception } => throw exception, { Item1: var mediatorResultValue } => mediatorResultValue };
+                            }
+                            finally
+                            {
+                                r.EntityLockHeldByBatch = false;
+                            }
+                        }, cancellationToken));
                     }
 
                     await Task.WhenAll(tasks);

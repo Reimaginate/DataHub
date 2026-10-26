@@ -34,9 +34,12 @@ public class ProcessPatchEntityRequestHandler(IMediator mediator, IProcessingLoc
 
         try
         {
-            var getLockResponse = await processingLockService.WaitForLockAsync(entityLockId, request.CorrelationId, duration: TimeSpan.FromMinutes(5), waitTimeOut: TimeSpan.FromMinutes(5), cancellationToken: cancellationToken);
-            getLockResponse.ThrowIfUnsuccessful();
-            entityLock = getLockResponse.Result;
+            if (!request.EntityLockHeldByBatch)
+            {
+                var getLockResponse = await processingLockService.WaitForLockAsync(entityLockId, request.CorrelationId, duration: TimeSpan.FromMinutes(5), waitTimeOut: TimeSpan.FromMinutes(5), cancellationToken: cancellationToken);
+                getLockResponse.ThrowIfUnsuccessful();
+                entityLock = getLockResponse.Result;
+            }
 
             var isDataHubEntity = request.DataSource == DataSources.DataHub;
             var isTrackedEntity = true;
