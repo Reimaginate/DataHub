@@ -4,6 +4,18 @@ Core DataHub runtime package for request handling, data operations, validation, 
 
 Use this package in applications that host or compose DataHub runtime behavior.
 
+## Process Lock 4.0 migration
+
+DataHub 1.4.12 uses Process Lock 4.0.0 and includes its separate Redis provider.
+Existing DataHub `WithProcessingLockOptions` registration and Redis connection
+settings remain valid. Restore packages and rebuild consumers after upgrading.
+
+Code that calls Process Lock's `WithRedisRepository` directly must import
+`Reimaginate.ProcessingLockService.Redis`. Align any explicit Process Lock
+package versions to 4.0.0 and rebuild libraries using the former Redis
+registration methods or `ProcessingLockInRedisRepository`. No Redis data
+migration is required.
+
 ## Tracking rebases
 
 Source and Data Hub rebases coordinate with existing entity locks in batches of

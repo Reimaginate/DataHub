@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Reimaginate.DataHub.SharedModels.Core;
 using Reimaginate.ProcessingLockService;
+using Reimaginate.ProcessingLockService.Redis;
 using System.Net.Http;
 using Microsoft.Azure.Cosmos;
 using Reimaginate.DataHub.Helpers;

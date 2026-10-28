@@ -31,7 +31,8 @@
 		<PackageReference Include="Reimaginate.Mapper.SourceGenerator" Version="1.3.0" />
 		<PackageReference Include="Reimaginate.Mediator.Abstractions" Version="1.3.0" />
 		<PackageReference Include="Reimaginate.Mediator.SourceGenerator" Version="1.3.0" />
-		<PackageReference Include="Reimaginate.ProcessingLockService" Version="3.1.0" />
+		<PackageReference Include="Reimaginate.ProcessingLockService" Version="4.0.0" />
+		<PackageReference Include="Reimaginate.ProcessingLockService.Redis" Version="4.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>

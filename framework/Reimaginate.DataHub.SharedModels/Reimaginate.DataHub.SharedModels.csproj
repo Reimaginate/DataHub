@@ -10,7 +10,7 @@
 	<ItemGroup>
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 		<PackageReference Include="Reimaginate.Mapper.Abstractions" Version="1.3.0" />
-		<PackageReference Include="Reimaginate.ProcessingLockService.Abstractions" Version="3.1.0" />
+		<PackageReference Include="Reimaginate.ProcessingLockService.Abstractions" Version="4.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>
